@@ -37,7 +37,6 @@ export function VenueStep({ venues, selected, onSelect }: { venues: Venue[]; sel
           );
         })}
       </ul>
-      <p className="mt-6 text-sm text-neutral-700">Walk-ins are welcome for workshops. Parties must be booked.</p>
     </section>
   );
 }

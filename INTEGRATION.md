@@ -64,7 +64,7 @@ if (venue.wixClientId) return <WixBookFlow venue={venue} />;  // existing code, 
 return <WhatsAppRequestCard venue={venue} />;                // existing card
 ```
 
-Keep the existing step components; only the functions that fetch data and create bookings change. Section 4 lists each one.
+Keep the existing step components; only the functions that fetch data and create bookings change. Section 4 lists each one. The website also keeps its own marketing lines on `/book`, such as "Walk-ins are welcome for workshops. Parties must be booked.": BayPook's reference page does not show them.
 
 ## 4. Which Wix call becomes which BayPook call (`lib/wix-booking.ts`)
 
@@ -75,6 +75,7 @@ Keep the existing step components; only the functions that fetch data and create
 | Running total | (Wix cart totals) | `api.quote({ venue, service, lines, addOns })`. Show its `lines`, `addOns`, `totalPence` and `inStoreNotes`. Never compute prices in the browser. |
 | Create the booking and go to payment | create booking, then redirect to Wix checkout | Two calls. **1.** When the customer leaves the places/extras step: `api.createHold({ venue, service, sessionId })` for a workshop or `{ …, startsAt }` for a party, plus `lines` and `addOns`. This holds the places for 15 minutes; show a countdown from `hold.expiresAt` ("We're holding your places for 14:59"). **2.** On Pay: `api.checkout({ holdId, customer, birthdayChild, message, accept: { terms: true, waiver: true }, returnUrl: \`${location.origin}/book/thanks\` })`, then `location.assign(res.checkoutUrl)` (Stripe Checkout). |
 | Hold ran out | (no such thing in Wix) | `checkout` fails with code `HOLD_EXPIRED` (also when the countdown reaches zero on screen). Show the friendly message and send the customer back to the time step. |
+| Terms, privacy policy and waiver | hard-coded links in the website | `venuesAndOrganisation()` returns `organisation.termsUrl`, `privacyUrl` and `waiverText` (with version numbers) from BayPook settings; link the two policies and show the waiver text in a "Read the waiver" disclosure above its checkbox. |
 | After payment | read the Wix booking from the redirect | Stripe returns to `/book/thanks?paid=1&venue=<slug>&booking=<token>`. `api.bookingSummary(token)` returns the booking (section 5). |
 
 ```ts
@@ -142,7 +143,7 @@ Every API error has a stable `code`. `friendlyMessage(err)` in the client alread
 |---|---|---|
 | `GONE` | Time taken, full, blocked or past the cut-off | "That time has just gone. Please pick another." |
 | `LIMIT` | Too many places (`err.limit` carries the number) | The server's own message, e.g. "Only 2 places left at this time." (falls back to "You can book up to {limit} places in one go.") |
-| `HOLD_EXPIRED` | The 15 minutes ran out | "Your 15 minutes ran out, so we released the places. Please choose your time again." |
+| `HOLD_EXPIRED` | The hold (15 minutes by default, a setting) ran out | "Your time ran out, so we let your booking go. Please choose your time again." |
 | `UNAVAILABLE` | Venue closed or cannot take payments | "Online booking is not available for this venue right now. Message or call us." |
 | `INVALID` | Something in the form is wrong | "Something in your booking needs another look. Please check and try again." |
 | `NOT_FOUND` | Venue, service, hold or booking gone | "We could not find that. It may have changed, so please start again." |

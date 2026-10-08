@@ -157,6 +157,22 @@ describe("public API (demo mode)", () => {
     expect(data.venues[0].timezone).toBe("Europe/London");
   });
 
+  it("includes the organisation's links, waiver and contact details with the venues", async () => {
+    const res = await venuesGET(req("/api/v1/venues"), undefined);
+    const data = await body<{ organisation: Record<string, unknown> }>(res);
+    const org = data.organisation;
+    expect(Object.keys(org).sort()).toEqual(
+      ["contactEmail", "contactPhone", "name", "privacyUrl", "termsUrl", "termsVersion", "timezone", "waiverText", "waiverVersion", "whatsappUrl"],
+    );
+    expect(org.termsUrl).toBe("https://slimedom.com/terms");
+    expect(org.privacyUrl).toBe("https://slimedom.com/privacy");
+    expect(org.termsVersion).toBe(1);
+    expect(org.waiverVersion).toBe(1);
+    expect(typeof org.waiverText).toBe("string");
+    expect((org.waiverText as string).length).toBeGreaterThan(0);
+    expect(org.timezone).toBe("Europe/London");
+  });
+
   it("lists the services with options and add-ons", async () => {
     const res = await servicesGET(req("/api/v1/venues/south-woodford/services"), params({ slug: "south-woodford" }));
     expect(res.status).toBe(200);

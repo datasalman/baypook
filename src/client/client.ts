@@ -23,6 +23,7 @@ import type {
   QuoteRequest,
   Service,
   Venue,
+  VenuesResponse,
 } from "./types";
 
 export type * from "./types";
@@ -67,7 +68,13 @@ export interface BayPookClientOptions {
 }
 
 export interface BayPookClient {
+  /** The venues only (`GET /venues`). */
   venues(): Promise<Venue[]>;
+  /**
+   * The whole `GET /venues` payload in one request: the venues and the organisation
+   * (terms and privacy links, the condensed waiver, contact details, timezone).
+   */
+  venuesAndOrganisation(): Promise<VenuesResponse>;
   services(venueSlug: string): Promise<Service[]>;
   availability(venueSlug: string, q: AvailabilityQuery): Promise<Availability>;
   quote(body: QuoteRequest): Promise<Quote>;
@@ -168,8 +175,11 @@ export function createBayPookClient(opts: BayPookClientOptions): BayPookClient {
 
   return {
     async venues() {
-      const data = await request<{ venues: Venue[] }>("GET", buildUrl(base, "/venues"));
+      const data = await request<VenuesResponse>("GET", buildUrl(base, "/venues"));
       return data.venues;
+    },
+    venuesAndOrganisation() {
+      return request<VenuesResponse>("GET", buildUrl(base, "/venues"));
     },
     async services(venueSlug) {
       const data = await request<{ services: Service[] }>("GET", buildUrl(base, `/venues/${encodeURIComponent(venueSlug)}/services`));
@@ -225,7 +235,7 @@ export function friendlyMessage(err: unknown): string {
         : "That is more than we can take in one booking. Please choose fewer.";
     }
     case "HOLD_EXPIRED":
-      return "Your 15 minutes ran out, so we released the places. Please choose your time again.";
+      return "Your time ran out, so we let your booking go. Please choose your time again.";
     case "UNAVAILABLE":
       return "Online booking is not available for this venue right now. Message or call us.";
     case "NETWORK":

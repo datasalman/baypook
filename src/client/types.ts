@@ -25,6 +25,29 @@ export interface Venue {
   timezone: string;
 }
 
+/** The organisation behind the venues: links, legal versions and contact details for the booking page. */
+export interface Organisation {
+  name: string;
+  /** The website's terms page; null when not set (show plain text). */
+  termsUrl: string | null;
+  privacyUrl: string | null;
+  /** The versions the server records against a booking at checkout. */
+  termsVersion: number;
+  waiverVersion: number;
+  /** The condensed liability waiver, plain text; paragraphs separated by blank lines. */
+  waiverText: string;
+  contactEmail: string;
+  contactPhone: string | null;
+  whatsappUrl: string | null;
+  timezone: string;
+}
+
+/** `GET /api/v1/venues`. */
+export interface VenuesResponse {
+  venues: Venue[];
+  organisation: Organisation;
+}
+
 /** A note about something paid for in store on the day (e.g. a Decoden piece). */
 export interface InStoreNote {
   /** Shown beside the option. */
@@ -271,6 +294,8 @@ export interface BookingSummary {
   /** The contract example only shows null; a string (or note object) is accepted defensively. */
   inStoreNote: string | InStoreNote | null;
   paymentMethod: PaymentMethod;
+  /** The organisation timezone, for showing the date and time (e.g. "Europe/London"). */
+  timezone: string;
 }
 
 /** Error body for every non-2xx response. */

@@ -41,7 +41,7 @@ function SummaryView({ summary, payInStore }: { summary: BookingSummary; payInSt
           </div>
           <div>
             <dt className="text-sm font-semibold text-neutral-700">When</dt>
-            <dd>{formatWhen(summary.startsAt, summary.endsAt, DEFAULT_TZ)}</dd>
+            <dd>{formatWhen(summary.startsAt, summary.endsAt, summary.timezone || DEFAULT_TZ)}</dd>
           </div>
           <div>
             <dt className="text-sm font-semibold text-neutral-700">Where</dt>
@@ -52,8 +52,9 @@ function SummaryView({ summary, payInStore }: { summary: BookingSummary; payInSt
               {v.mapsUrl ? (
                 <>
                   <br />
-                  <a href={v.mapsUrl} target="_blank" rel="noreferrer" className={linkClass()}>
+                  <a href={v.mapsUrl} target="_blank" rel="noopener" className={linkClass()}>
                     Open in maps
+                    <span className="sr-only"> (opens in a new tab)</span>
                   </a>
                 </>
               ) : null}

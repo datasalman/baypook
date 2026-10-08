@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCountdown } from "../_lib/dates";
 
-/** "We're holding your places for 14:59", counting down to `expiresAt`; calls `onExpire` once. */
+/**
+ * "We're holding your places for 14:59" (sessions) or "We're holding your time for 14:59" (slots),
+ * counting down to `expiresAt`; calls `onExpire` once.
+ */
 export function HoldTimer({ expiresAt, what, onExpire }: { expiresAt: string; what: string; onExpire: () => void }) {
   const end = new Date(expiresAt).getTime();
   const [left, setLeft] = useState(() => end - Date.now());

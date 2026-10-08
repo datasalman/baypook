@@ -23,9 +23,15 @@ Every error is `{ "error": { "code": string, "message": string, "limit"?: number
 ```json
 { "venues": [ { "slug": "south-woodford", "name": "South Woodford", "status": "open", "opensAt": null,
   "address": "53A George Lane…", "postcode": "E18 1LN", "mapsUrl": "…", "parkingNotes": "…", "transportNotes": null,
-  "maxPlacesPerBooking": 10, "onlineBookable": true, "timezone": "Europe/London" } ] }
+  "maxPlacesPerBooking": 10, "onlineBookable": true, "timezone": "Europe/London" } ],
+  "organisation": { "name": "Slimedom", "termsUrl": "https://slimedom.com/terms", "privacyUrl": "https://slimedom.com/privacy",
+    "termsVersion": 1, "waiverVersion": 1, "waiverText": "…", "contactEmail": "hello@…", "contactPhone": "…",
+    "whatsappUrl": null, "timezone": "Europe/London" } }
 ```
 `onlineBookable` is false when the venue is closed or (live mode) has no Stripe key.
+
+`organisation` comes from the organisation settings, so the booking page never hard-codes them: `termsUrl` and `privacyUrl` (null when not set: show plain text, no link) for the terms checkbox, `waiverText` (the condensed liability waiver, plain text, paragraphs separated by blank lines) to show above the waiver checkbox, the current `termsVersion` and `waiverVersion` (informational: checkout records the current versions itself and takes only `accept: { terms, waiver }`), the contact details (`contactPhone` and `whatsappUrl` may be null) and the `timezone`.
+In the client, `venuesAndOrganisation()` returns this whole payload from one request; `venues()` returns only the list.
 
 ### `GET /api/v1/venues/:slug/services`
 Non-archived, `onlineEnabled` services in the admin's sort order.

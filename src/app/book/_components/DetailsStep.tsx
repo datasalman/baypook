@@ -2,14 +2,11 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import { BayPookError, formatPence, friendlyMessage, isPayInStoreCheckout, type BayPookClient } from "@/client/client";
-import type { CheckoutRequest, HoldResponse, Service, Venue } from "@/client/types";
+import type { CheckoutRequest, HoldResponse, Organisation, Service, Venue } from "@/client/types";
 import { formatWhen } from "../_lib/dates";
 import { DETAIL_FIELDS, validateDetails, type DetailsErrors, type DetailsInput } from "../_lib/validate";
 import { HoldTimer } from "./HoldTimer";
 import { BackButton, Button, Card, focusRing, Notice, StepHeading } from "./ui";
-
-// The website owns these links; this reference page points at Slimedom's live terms page.
-const TERMS_URL = "https://slimedom.com/terms";
 
 const EMPTY: DetailsInput = {
   firstName: "",
@@ -57,6 +54,26 @@ function Field({
 }
 
 const inputClass = `block min-h-12 w-full rounded-lg border border-neutral-500 bg-white px-3 py-2 text-base text-neutral-950 aria-[invalid=true]:border-red-700 ${focusRing}`;
+
+/** A link that opens in a new tab, with the hint for screen readers; plain text when there is no URL. */
+function NewTabLink({ href, children }: { href: string | null | undefined; children: ReactNode }) {
+  if (!href) return <>{children}</>;
+  return (
+    <a href={href} target="_blank" rel="noopener" className={`underline ${focusRing}`}>
+      {children}
+      <span className="sr-only"> (opens in a new tab)</span>
+    </a>
+  );
+}
+
+/** Plain text to paragraphs: blank lines separate paragraphs, single line breaks are kept. */
+function paragraphs(text: string): string[] {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
 
 function describedBy(id: string, error?: string, hint?: boolean): string | undefined {
   const ids = [hint ? `${id}-hint` : null, error ? `${id}-error` : null].filter(Boolean);
@@ -118,6 +135,7 @@ export function BookingSummaryPanel({ hold, service, venue }: { hold: HoldRespon
 
 export function DetailsStep({
   client,
+  organisation,
   venue,
   service,
   hold,
@@ -128,6 +146,8 @@ export function DetailsStep({
   onBack,
 }: {
   client: BayPookClient;
+  /** Terms and privacy links and the waiver wording, from `GET /venues`. */
+  organisation: Organisation | null;
   venue: Venue;
   service: Service;
   hold: HoldResponse;
@@ -152,6 +172,7 @@ export function DetailsStep({
     if (submitted) setErrors(validateDetails(next, isParty));
   };
 
+  const waiver = paragraphs(organisation?.waiverText ?? "");
   const total = hold.quote.totalPence;
   const payLabel = payInStore && service.payInStoreEnabled ? "Book, pay in store" : `Pay ${formatPence(total)}`;
 
@@ -214,7 +235,7 @@ export function DetailsStep({
     <section aria-labelledby="step-heading">
       <BackButton onClick={onBack} label="Change your booking" />
       <StepHeading>Your details</StepHeading>
-      <HoldTimer expiresAt={hold.hold.expiresAt} what={isParty ? "party time" : "places"} onExpire={onExpire} />
+      <HoldTimer expiresAt={hold.hold.expiresAt} what={isParty ? "time" : "places"} onExpire={onExpire} />
 
       <BookingSummaryPanel hold={hold} service={service} venue={venue} />
 
@@ -349,10 +370,8 @@ export function DetailsStep({
                 key: "terms",
                 label: (
                   <>
-                    I agree to the{" "}
-                    <a href={TERMS_URL} target="_blank" rel="noreferrer" className={`underline ${focusRing}`}>
-                      terms and conditions and privacy policy
-                    </a>
+                    I agree to the <NewTabLink href={organisation?.termsUrl}>terms and conditions</NewTabLink> and{" "}
+                    <NewTabLink href={organisation?.privacyUrl}>privacy policy</NewTabLink>
                   </>
                 ),
               },
@@ -360,6 +379,18 @@ export function DetailsStep({
             ] as const
           ).map(({ key, label }) => (
             <div key={key}>
+              {key === "waiver" && waiver.length > 0 ? (
+                <details className="mb-3 rounded-lg border border-neutral-300 bg-white px-3 py-2">
+                  <summary className={`min-h-11 cursor-pointer py-2 font-semibold ${focusRing}`}>Read the waiver</summary>
+                  <div className="space-y-2 pb-2 text-neutral-900">
+                    {waiver.map((p, i) => (
+                      <p key={i} className="whitespace-pre-line">
+                        {p}
+                      </p>
+                    ))}
+                  </div>
+                </details>
+              ) : null}
               <div className="flex items-start gap-3">
                 <input
                   id={`f-${key}`}

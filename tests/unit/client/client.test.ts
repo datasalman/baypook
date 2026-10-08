@@ -60,6 +60,18 @@ describe("createBayPookClient requests", () => {
     expect(calls[0].init?.body).toBeUndefined();
   });
 
+  it("venuesAndOrganisation() returns the venues and the organisation from one GET /venues", async () => {
+    const organisation = { name: "Org", termsUrl: "https://x.test/terms", privacyUrl: null, waiverText: "W" };
+    const { fetch, calls } = mockFetch([{ status: 200, body: { venues: [{ slug: "south-woodford" }], organisation } }]);
+    const api = createBayPookClient({ baseUrl: "https://bp.test", fetch });
+    const data = await api.venuesAndOrganisation();
+    expect(data.venues).toEqual([{ slug: "south-woodford" }]);
+    expect(data.organisation).toEqual(organisation);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://bp.test/api/v1/venues");
+    expect(calls[0].init?.method).toBe("GET");
+  });
+
   it("services() encodes the slug and unwraps", async () => {
     const { fetch, calls } = mockFetch([{ status: 200, body: { services: [] } }]);
     const api = createBayPookClient({ baseUrl: "https://bp.test", fetch });
@@ -206,7 +218,7 @@ describe("friendlyMessage", () => {
   it("uses the agreed customer wording", () => {
     expect(friendlyMessage(new BayPookError("GONE", "x", 409))).toBe("That time has just gone. Please pick another.");
     expect(friendlyMessage(new BayPookError("HOLD_EXPIRED", "x", 410))).toBe(
-      "Your 15 minutes ran out, so we released the places. Please choose your time again.",
+      "Your time ran out, so we let your booking go. Please choose your time again.",
     );
     expect(friendlyMessage(new BayPookError("UNAVAILABLE", "x", 503))).toBe(
       "Online booking is not available for this venue right now. Message or call us.",

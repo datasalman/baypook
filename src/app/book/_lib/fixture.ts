@@ -29,6 +29,7 @@ import type {
   Service,
   SessionAvailability,
   SlotStart,
+  Organisation,
   Venue,
 } from "@/client/types";
 import { addDays, weekdayMon0 } from "./dates";
@@ -90,6 +91,21 @@ const VENUES: Venue[] = [
     timezone: TZ,
   },
 ];
+
+const ORGANISATION: Organisation = {
+  name: "Slimedom (fixture)",
+  termsUrl: "https://slimedom.com/terms",
+  privacyUrl: "https://slimedom.com/privacy",
+  termsVersion: 1,
+  waiverVersion: 1,
+  waiverText:
+    "Fixture waiver. Slime and craft materials can stain clothes and soft furnishings, so please dress for mess.\n\n" +
+    "A grown-up stays responsible for each child while they are with us. Tell us about any allergies before the day.",
+  contactEmail: "hello@example.com",
+  contactPhone: "020 0000 0000",
+  whatsappUrl: null,
+  timezone: TZ,
+};
 
 function servicesFor(venue: string): Service[] {
   const id = (s: string) => `${venue}:${s}`;
@@ -463,7 +479,7 @@ function handle(method: string, url: URL, init: RequestInit | undefined, opts: R
   const now = new Date();
   let m: RegExpMatchArray | null;
 
-  if (method === "GET" && path === "/venues") return json(200, { venues: VENUES });
+  if (method === "GET" && path === "/venues") return json(200, { venues: VENUES, organisation: ORGANISATION });
 
   if (method === "GET" && (m = path.match(/^\/venues\/([^/]+)\/services$/))) {
     const slug = decodeURIComponent(m[1]);
@@ -584,6 +600,7 @@ function handle(method: string, url: URL, init: RequestInit | undefined, opts: R
         customer: { firstName: c.firstName },
         inStoreNote: hold.quote.inStoreNotes.length > 0 ? hold.quote.inStoreNotes.join(" ") : null,
         paymentMethod: payInStore ? "pay_in_store" : "online_card",
+        timezone: TZ,
       };
       saveBooking(token, { summary, createdAt: Date.now(), neverConfirm: c.firstName.trim().toLowerCase() === "slow" });
 

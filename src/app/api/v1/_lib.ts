@@ -29,6 +29,25 @@ export function venueJson(venue: s.Venue, timezone: string) {
   };
 }
 
+/**
+ * The organisation as the public booking page needs it: legal links and versions, the condensed
+ * waiver wording, contact details and the timezone. Nothing private (no legal address, no settings).
+ */
+export function organisationJson(org: s.Organisation) {
+  return {
+    name: org.name,
+    termsUrl: org.termsUrl?.trim() || null,
+    privacyUrl: org.privacyUrl?.trim() || null,
+    termsVersion: org.termsVersion,
+    waiverVersion: org.waiverVersion,
+    waiverText: org.waiverText,
+    contactEmail: org.contactEmail,
+    contactPhone: org.contactPhone?.trim() || null,
+    whatsappUrl: org.whatsappUrl?.trim() || null,
+    timezone: org.timezone,
+  };
+}
+
 function noteJson(x: { inStoreNoteLine: string | null; inStoreNoteShort: string | null; inStoreMenuUrl: string | null }) {
   const line = x.inStoreNoteLine?.trim() || x.inStoreNoteShort?.trim() || "";
   const short = x.inStoreNoteShort?.trim() || x.inStoreNoteLine?.trim() || "";

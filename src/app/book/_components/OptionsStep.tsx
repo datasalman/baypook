@@ -86,8 +86,9 @@ export function SessionOptionsStep({
                 {o.inStoreNote.menuUrl ? (
                   <>
                     {" "}
-                    <a href={o.inStoreNote.menuUrl} target="_blank" rel="noreferrer" className={`underline ${focusRing}`}>
-                      See the pieces
+                    <a href={o.inStoreNote.menuUrl} target="_blank" rel="noopener" className={`underline ${focusRing}`}>
+                      See the menu
+                      <span className="sr-only"> (opens in a new tab)</span>
                     </a>
                   </>
                 ) : null}

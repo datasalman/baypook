@@ -126,7 +126,7 @@ export function DayStep({
       <StepHeading hint={service.name}>Which day?</StepHeading>
       {notice ? <Notice kind="warning">{notice}</Notice> : null}
 
-      <div className="rounded-xl border border-neutral-300 bg-white p-3">
+      <div className="rounded-xl border border-neutral-300 bg-white p-2 sm:p-3">
         <div className="mb-3 flex items-center justify-between gap-2">
           <Button variant="secondary" className="min-h-11! px-3!" disabled={month <= minMonth} onClick={() => go(-1)} aria-label="Previous month">
             <span aria-hidden="true">←</span>
@@ -139,12 +139,12 @@ export function DayStep({
           </Button>
         </div>
 
-        <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-neutral-600" aria-hidden="true">
+        <div className="grid grid-cols-7 gap-0.5 text-center text-xs font-medium text-neutral-600 sm:gap-1" aria-hidden="true">
           {WEEKDAYS.map((d) => (
             <span key={d}>{d}</span>
           ))}
         </div>
-        <div role="group" aria-label={formatMonth(month)} className="mt-1 grid grid-cols-7 gap-1">
+        <div role="group" aria-label={formatMonth(month)} className="mt-1 grid grid-cols-7 gap-0.5 sm:gap-1">
           {Array.from({ length: lead }, (_, i) => (
             <span key={`blank-${i}`} />
           ))}
@@ -163,7 +163,7 @@ export function DayStep({
                   setSelected(date);
                   setNotice(null);
                 }}
-                className={`aspect-square min-h-11 rounded-lg text-base tabular-nums ${
+                className={`aspect-square min-h-11 w-full min-w-0 rounded-lg text-base tabular-nums ${
                   isSelected
                     ? "bg-neutral-900 font-bold text-white"
                     : ok

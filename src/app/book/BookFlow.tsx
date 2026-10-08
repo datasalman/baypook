@@ -8,6 +8,7 @@ import type {
   HoldRequest,
   HoldResponse,
   LineRequest,
+  Organisation,
   QuoteRequest,
   Service,
   ServiceKind,
@@ -84,6 +85,7 @@ export function BookFlow() {
   const [initDone, setInitDone] = useState(false);
 
   const [venues, setVenues] = useState<Venue[] | null>(null);
+  const [organisation, setOrganisation] = useState<Organisation | null>(null);
   const [venue, setVenue] = useState<Venue | null>(null);
   const [services, setServices] = useState<Service[] | null>(null);
   const [service, setService] = useState<Service | null>(null);
@@ -181,10 +183,11 @@ export function BookFlow() {
     let live = true;
     setLoadError(null);
     client
-      .venues()
-      .then((vs) => {
+      .venuesAndOrganisation()
+      .then(({ venues: vs, organisation: org }) => {
         if (!live) return;
         setVenues(vs);
+        setOrganisation(org ?? null);
         if (!appliedVenue.current) {
           appliedVenue.current = true;
           const v = vs.find((x) => x.slug === initial.current.venue && x.onlineBookable);
@@ -480,6 +483,7 @@ export function BookFlow() {
     content = hold ? (
       <DetailsStep
         client={client}
+        organisation={organisation}
         venue={venue}
         service={service}
         hold={hold.res}
