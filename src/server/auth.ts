@@ -71,9 +71,19 @@ export function normaliseEmail(email: string): string {
 /** Only allow same-site relative paths as post-login destinations. */
 export function safeNextPath(next: string | null | undefined, fallback = "/admin"): string {
   if (!next || typeof next !== "string") return fallback;
-  if (!next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return fallback;
-  if (next.startsWith("/login") || next.startsWith("/auth/")) return fallback;
-  return next;
+  if (next.length > 2000) return fallback;
+  // Control characters and backslashes can smuggle a host past the checks below.
+  if (/[\u0000-\u001f\u007f\\]/.test(next)) return fallback;
+  if (!next.startsWith("/") || next.startsWith("//")) return fallback;
+  let u: URL;
+  try {
+    u = new URL(next, "http://x");
+  } catch {
+    return fallback;
+  }
+  if (u.origin !== "http://x") return fallback;
+  if (u.pathname.startsWith("/login") || u.pathname.startsWith("/auth/")) return fallback;
+  return u.pathname + u.search + u.hash;
 }
 
 // ---------- roles (pure) ----------
@@ -240,7 +250,11 @@ export async function requestMagicLink(db: Db, email: string, opts: { next?: str
 async function sendMagicLinkEmail(db: Db, msg: { to: string; subject: string; html: string; text: string }): Promise<void> {
   try {
     const { sendRawEmail } = await import("@/server/notifications");
-    await sendRawEmail(db, { ...msg, template: "magic_link", venueId: null });
+    // In live mode the Outbox keeps a redacted copy so a working sign-in link never sits in the database.
+    const storedBody = isDemo()
+      ? undefined
+      : { html: "<p>Sign-in link sent. The link itself is not stored.</p>", text: "Sign-in link sent. The link itself is not stored." };
+    await sendRawEmail(db, { ...msg, template: "magic_link", venueId: null, storedBody });
   } catch (err) {
     // Fallback if the notifications service is unavailable: write the Outbox row
     // and hand the message to the email provider directly. Never throws.
@@ -303,7 +317,7 @@ export async function signInAsDemoUser(db: Db, email: string): Promise<{ session
 // ---------- request-scoped helpers ----------
 
 function cookieSecure(): boolean {
-  return env.baseUrl().startsWith("https://");
+  return env.baseUrl().startsWith("https://") || (process.env.NODE_ENV === "production" && !isDemo());
 }
 
 /** Set the session cookie (route handlers and server actions only). */

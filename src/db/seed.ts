@@ -9,6 +9,7 @@ import * as s from "./schema";
 import type { OpeningHours } from "./schema";
 import { DEFAULT_TEMPLATES } from "@/providers/email/defaults";
 import { minutesToTime, timeToMinutes, WEEKDAY_KEYS } from "@/core/time";
+import { isDemo } from "@/lib/env";
 
 const PLACEHOLDER_TERMS = `These are placeholder terms. The full terms and conditions are at https://slimedom.com/terms and apply to every booking.
 
@@ -28,7 +29,7 @@ export async function seedIfEmpty(db: DbOrTx): Promise<boolean> {
 export type SeedResult = {
   organisationId: string;
   venues: Record<"south-woodford" | "lakeside", string>;
-  ownerUserId: string;
+  ownerUserId: string | null;
 };
 
 export async function seed(db: DbOrTx): Promise<SeedResult> {
@@ -130,23 +131,27 @@ export async function seed(db: DbOrTx): Promise<SeedResult> {
   await seedVenueCatalogue(db, { venue: sw, workshopRoomId: swMain.id, partyRoomId: swMain.id, hours: swHours });
   await seedVenueCatalogue(db, { venue: lk, workshopRoomId: lkWorkshop.id, partyRoomId: lkParty.id, hours: lkHours });
 
-  // ----- users -----
-  const [owner] = await db
-    .insert(s.users)
-    .values({ email: "owner@demo.baypook", name: "Demo owner", isOwner: true })
-    .returning();
-  const [swManager] = await db
-    .insert(s.users)
-    .values({ email: "manager.southwoodford@demo.baypook", name: "Demo manager (South Woodford)", isOwner: false, invitedBy: owner.id })
-    .returning();
-  const [lkStaff] = await db
-    .insert(s.users)
-    .values({ email: "staff.lakeside@demo.baypook", name: "Demo staff (Lakeside)", isOwner: false, invitedBy: owner.id })
-    .returning();
-  await db.insert(s.userVenues).values([
-    { userId: swManager.id, venueId: sw.id, role: "manager" },
-    { userId: lkStaff.id, venueId: lk.id, role: "staff" },
-  ]);
+  // ----- users: demo accounts exist only in demo mode; live owners come from `scripts/seed.ts --owner` -----
+  let ownerUserId: string | null = null;
+  if (isDemo()) {
+    const [owner] = await db
+      .insert(s.users)
+      .values({ email: "owner@demo.baypook", name: "Demo owner", isOwner: true })
+      .returning();
+    const [swManager] = await db
+      .insert(s.users)
+      .values({ email: "manager.southwoodford@demo.baypook", name: "Demo manager (South Woodford)", isOwner: false, invitedBy: owner.id })
+      .returning();
+    const [lkStaff] = await db
+      .insert(s.users)
+      .values({ email: "staff.lakeside@demo.baypook", name: "Demo staff (Lakeside)", isOwner: false, invitedBy: owner.id })
+      .returning();
+    await db.insert(s.userVenues).values([
+      { userId: swManager.id, venueId: sw.id, role: "manager" },
+      { userId: lkStaff.id, venueId: lk.id, role: "staff" },
+    ]);
+    ownerUserId = owner.id;
+  }
 
   // ----- email templates -----
   await db.insert(s.emailTemplates).values(
@@ -155,7 +160,7 @@ export async function seed(db: DbOrTx): Promise<SeedResult> {
 
   await db.insert(s.settings).values([{ key: "seed.version", value: 1 }]);
 
-  return { organisationId: org.id, venues: { "south-woodford": sw.id, lakeside: lk.id }, ownerUserId: owner.id };
+  return { organisationId: org.id, venues: { "south-woodford": sw.id, lakeside: lk.id }, ownerUserId };
 }
 
 async function seedVenueCatalogue(

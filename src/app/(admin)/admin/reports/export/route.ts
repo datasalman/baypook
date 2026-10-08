@@ -37,6 +37,12 @@ export async function GET(req: Request): Promise<Response> {
   else if (visible.includes(venueParam)) venueIds = [venueParam];
   else return bad("You do not have access to that venue.", 403);
 
+  // Contact details and money leave the building only with an owner or a manager of every venue in scope.
+  if (kind !== "bookings" && !user.isOwner) {
+    const managesAll = venueIds.length > 0 && venueIds.every((id) => user.venues.some((v) => v.venueId === id && v.role === "manager"));
+    if (!managesAll) return bad("Only owners and managers can export this.", 403);
+  }
+
   const fromRaw = url.searchParams.get("from");
   const toRaw = url.searchParams.get("to");
   const from = fromRaw && isValidDateStr(fromRaw) ? fromRaw : null;

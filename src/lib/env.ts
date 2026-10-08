@@ -38,7 +38,8 @@ export const env = {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const defaults = ["http://localhost:3000", "http://localhost:3100"];
+    // Local origins are implied only in demo mode; a live deployment lists every origin explicitly.
+    const defaults = isDemo() ? ["http://localhost:3000", "http://localhost:3100"] : [];
     return Array.from(new Set([...defaults, ...list]));
   },
   stripeSecretKey: (slug: string) => read(`STRIPE_SECRET_KEY__${envSuffixForSlug(slug)}`),

@@ -350,6 +350,8 @@ export const bookings = pgTable(
     /** Message the customer typed when booking. */
     customerMessage: text("customer_message"),
     holdId: uuid("hold_id"),
+    /** Reference in the system a booking was imported from (e.g. a Wix booking id). */
+    externalRef: text("external_ref"),
     cancelledAt: ts("cancelled_at"),
     cancelReason: text("cancel_reason"),
     noShowAt: ts("no_show_at"),
@@ -366,6 +368,7 @@ export const bookings = pgTable(
     index("bookings_room_window_idx").on(t.roomId, t.startsAt, t.endsAt),
     index("bookings_session_idx").on(t.sessionId),
     index("bookings_customer_idx").on(t.customerId),
+    index("bookings_external_ref_idx").on(t.externalRef),
   ],
 );
 
@@ -397,18 +400,22 @@ export const payments = pgTable(
   ],
 );
 
-export const refunds = pgTable("refunds", {
-  id: id(),
-  paymentId: uuid("payment_id").notNull().references(() => payments.id),
-  bookingId: uuid("booking_id").notNull().references(() => bookings.id),
-  amountPence: integer("amount_pence").notNull(),
-  reason: text("reason").notNull().default(""),
-  status: text("status", { enum: ["pending", "succeeded", "failed"] }).notNull(),
-  providerRefundId: text("provider_refund_id"),
-  createdBy: uuid("created_by"),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-});
+export const refunds = pgTable(
+  "refunds",
+  {
+    id: id(),
+    paymentId: uuid("payment_id").notNull().references(() => payments.id),
+    bookingId: uuid("booking_id").notNull().references(() => bookings.id),
+    amountPence: integer("amount_pence").notNull(),
+    reason: text("reason").notNull().default(""),
+    status: text("status", { enum: ["pending", "succeeded", "failed"] }).notNull(),
+    providerRefundId: text("provider_refund_id"),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("refunds_provider_refund_idx").on(t.providerRefundId)],
+);
 
 // ---------- users & auth ----------
 
@@ -526,12 +533,17 @@ export const jobRuns = pgTable("job_runs", {
   finishedAt: ts("finished_at"),
 });
 
-export const processedWebhookEvents = pgTable("processed_webhook_events", {
-  id: text("id").primaryKey(),
-  venueId: uuid("venue_id"),
-  type: text("type").notNull(),
-  receivedAt: ts("received_at").notNull().defaultNow(),
-});
+/** One row per (venue, Stripe event id): two venues may share a Stripe account, so the id alone is not unique. */
+export const processedWebhookEvents = pgTable(
+  "processed_webhook_events",
+  {
+    id: text("id").notNull(),
+    venueId: uuid("venue_id").notNull(),
+    type: text("type").notNull(),
+    receivedAt: ts("received_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.venueId, t.id] })],
+);
 
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),

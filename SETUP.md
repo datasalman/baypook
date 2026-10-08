@@ -76,7 +76,8 @@ Fees: 1.5% + 20p per standard UK card. No monthly fee. Disputes cost £20 and sh
    - The Stripe (step 1), Resend (step 2) and Google (step 3) variables
 4. Deploy. The `vercel.json` in the repo registers the cron jobs (hold expiry every 5 minutes, reminders hourly, retention daily). Vercel signs them with `CRON_SECRET`.
 5. Domains: Settings, Domains, add `book-api.slimedom.com` and `admin.slimedom.com`. Vercel shows a `CNAME` for each (`cname.vercel-dns.com`); add them at your DNS provider. Both names serve the same deployment; the API lives under `/api/v1`, the admin under `/admin`.
-6. Plan: BayPook is a commercial app, so the project must sit on a **Pro** team (US$20 a seat). If the website already has a Pro seat, add this project to the same team at no extra cost.
+6. Rate limiting (recommended): Settings, Firewall, add a rate-limit rule for paths starting `/api/v1/holds` and `/api/v1/checkout` (for example 30 requests a minute per IP). BayPook has its own light limit, but Vercel's runs before the function and is shared across instances.
+7. Plan: BayPook is a commercial app, so the project must sit on a **Pro** team (US$20 a seat). If the website already has a Pro seat, add this project to the same team at no extra cost.
 
 ## 6. First owner login
 

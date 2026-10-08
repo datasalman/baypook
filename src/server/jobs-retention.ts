@@ -50,7 +50,7 @@ export async function retentionJob(db: DbOrTx, now: Date = new Date()): Promise<
   return db.transaction(async (tx) => {
     const bookings = await tx
       .update(s.bookings)
-      .set({ customerMessage: null, notes: null, birthdayChildFirstName: null, anonymisedAt: now, updatedAt: now })
+      .set({ customerMessage: null, notes: null, birthdayChildFirstName: null, birthdayChildAge: null, anonymisedAt: now, updatedAt: now })
       .where(and(lt(s.bookings.endsAt, cutoff), isNull(s.bookings.anonymisedAt)))
       .returning({ id: s.bookings.id });
 

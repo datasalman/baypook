@@ -287,6 +287,7 @@ type QueuedEmail = {
   text: string;
   attachments: EmailAttachment[];
   replyTo?: string;
+  storedBody?: { html: string; text: string };
 };
 
 async function queueAndSend(db: DbOrTx, email: QueuedEmail): Promise<s.Notification> {
@@ -300,8 +301,8 @@ async function queueAndSend(db: DbOrTx, email: QueuedEmail): Promise<s.Notificat
       toAddress: email.to,
       subject: email.subject,
       status: "queued",
-      bodyHtml: email.html,
-      bodyText: email.text,
+      bodyHtml: email.storedBody?.html ?? email.html,
+      bodyText: email.storedBody?.text ?? email.text,
       attachments: email.attachments,
     })
     .returning();
@@ -369,7 +370,17 @@ export async function sendBookingEmail(
 /** Any other email (magic links, invites, tests). Recorded in the Outbox like the rest. */
 export async function sendRawEmail(
   db: DbOrTx,
-  input: { to: string; subject: string; html: string; text: string; template: string; venueId?: string | null; attachments?: EmailAttachment[] },
+  input: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+    template: string;
+    venueId?: string | null;
+    attachments?: EmailAttachment[];
+    /** What the Outbox keeps when the real body must not be stored (sign-in links). */
+    storedBody?: { html: string; text: string };
+  },
 ): Promise<s.Notification> {
   return queueAndSend(db, {
     bookingId: null,
@@ -380,6 +391,7 @@ export async function sendRawEmail(
     html: input.html,
     text: input.text,
     attachments: input.attachments ?? [],
+    storedBody: input.storedBody,
   });
 }
 
@@ -604,6 +616,7 @@ function sampleContext(
     notes: null,
     customerMessage: null,
     holdId: null,
+    externalRef: null,
     cancelledAt: null,
     cancelReason: null,
     noShowAt: null,
