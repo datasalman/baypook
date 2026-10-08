@@ -86,12 +86,19 @@ export async function createHold(
         tz: input.tz,
       });
 
+      // A session keeps its own room (it may be pinned in an old room after the service moved).
+      let roomId = service.roomId;
+      if (slot.sessionId) {
+        const [session] = await tx.select({ roomId: s.sessions.roomId }).from(s.sessions).where(eq(s.sessions.id, slot.sessionId)).limit(1);
+        if (session) roomId = session.roomId;
+      }
+
       const [hold] = await tx
         .insert(s.holds)
         .values({
           venueId: venue.id,
           serviceId: service.id,
-          roomId: service.roomId,
+          roomId,
           sessionId: slot.sessionId,
           startsAt: slot.startsAt,
           endsAt: slot.endsAt,
@@ -119,6 +126,21 @@ export async function getHold(db: DbOrTx, id: string, _now?: Date): Promise<s.Ho
 /** An active, unexpired hold. Throws NOT_FOUND when missing, HOLD_EXPIRED when lapsed or no longer active. */
 export async function getActiveHold(db: DbOrTx, id: string, now: Date = new Date()): Promise<s.Hold> {
   const hold = await getHold(db, id);
+  if (!hold) throw new HoldError("NOT_FOUND", "We could not find that booking in progress.");
+  if (hold.status !== "active" || hold.expiresAt.getTime() <= now.getTime()) {
+    throw new HoldError("HOLD_EXPIRED", "Your places were held for a short time and that time has run out. Please choose a time again.");
+  }
+  return hold;
+}
+
+/**
+ * Lock the hold row (`SELECT ... FOR UPDATE`) inside a transaction and check it is
+ * still active and unexpired. Concurrent checkouts on one hold serialise here, and
+ * the second sees the first one's changes. Throws like `getActiveHold`.
+ */
+export async function lockActiveHold(tx: DbOrTx, id: string, now: Date = new Date()): Promise<s.Hold> {
+  if (!isUuid(id)) throw new HoldError("NOT_FOUND", "We could not find that booking in progress.");
+  const [hold] = await tx.select().from(s.holds).where(eq(s.holds.id, id)).for("update");
   if (!hold) throw new HoldError("NOT_FOUND", "We could not find that booking in progress.");
   if (hold.status !== "active" || hold.expiresAt.getTime() <= now.getTime()) {
     throw new HoldError("HOLD_EXPIRED", "Your places were held for a short time and that time has run out. Please choose a time again.");

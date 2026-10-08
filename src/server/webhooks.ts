@@ -1,22 +1,24 @@
 /**
  * Stripe webhook handling (one endpoint per venue; the route verifies the signature).
  *
- * Idempotent: each event id is recorded in `processed_webhook_events` first and a
- * repeat is ignored. If handling fails the record is removed so Stripe's retry is
- * processed. Bookings are confirmed only here (and by the demo checkout), never
- * from the customer's return URL.
+ * Idempotent: each (venue, event id) is recorded in `processed_webhook_events`
+ * first and a repeat is ignored. If handling fails, or the event names a booking
+ * or payment this venue does not know (yet), the record is removed so Stripe's
+ * retry (or the right venue's endpoint) can process it. Bookings are confirmed
+ * only here (and by the demo checkout), never from the customer's return URL, and
+ * only when the amount paid covers the booking in the organisation's currency.
  *
  * The event objects are read structurally (only the fields used below), so the
  * handler does not depend on the Stripe SDK's type layout or API version.
  */
-import { and, asc, eq, inArray, or, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray, or, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { fmtPence } from "@/core/time";
 import { env } from "@/lib/env";
 import { escapeHtml, wrapHtml } from "@/providers/email/render";
 import { audit } from "./audit";
-import { cancelPendingBooking, confirmBookingPaid, findBookingIdByCheckout, recordProviderRefund } from "./bookings";
+import { cancelPendingBooking, confirmBookingPaid, findBookingIdByCheckout, recordProviderRefund, settleRefund } from "./bookings";
 import { adminBookingUrl, brandFor, sendRawEmail } from "./notifications";
 import { getOrganisation } from "./org";
 
@@ -66,13 +68,21 @@ export async function handleStripeEvent(
     .returning({ id: s.processedWebhookEvents.id });
   if (inserted.length === 0) return { type: event.type, duplicate: true };
 
+  const forget = () =>
+    db
+      .delete(s.processedWebhookEvents)
+      .where(and(eq(s.processedWebhookEvents.venueId, venue.id), eq(s.processedWebhookEvents.id, event.id)));
+  let result: WebhookResult;
   try {
-    return await dispatch(db, venue, event);
+    result = await dispatch(db, venue, event);
   } catch (e) {
     // Let Stripe retry: forget that we saw this event.
-    await db.delete(s.processedWebhookEvents).where(eq(s.processedWebhookEvents.id, event.id));
+    await forget();
     throw e;
   }
+  // Nothing was recorded for an event we could not place: a retry may find it.
+  if (result.ignored === "unknown booking" || result.ignored === "unknown payment") await forget();
+  return result;
 }
 
 async function dispatch(db: DbOrTx, venue: Pick<s.Venue, "id" | "slug">, event: WebhookEvent): Promise<WebhookResult> {
@@ -102,6 +112,63 @@ async function bookingInVenue(db: DbOrTx, bookingId: string | null, venueId: str
 
 // ---------- payment succeeded ----------
 
+/** True when this checkout or payment intent is already recorded as paid on the booking. */
+async function alreadyRecorded(db: DbOrTx, bookingId: string, checkoutId: string | null, intentId: string | null): Promise<boolean> {
+  const ids: SQL[] = [];
+  if (checkoutId) ids.push(eq(s.payments.providerCheckoutId, checkoutId));
+  if (intentId) ids.push(eq(s.payments.providerPaymentIntentId, intentId));
+  if (ids.length === 0) return false;
+  const [p] = await db
+    .select({ id: s.payments.id })
+    .from(s.payments)
+    .where(and(eq(s.payments.bookingId, bookingId), notInArray(s.payments.status, ["pending", "failed"]), or(...ids)))
+    .limit(1);
+  return Boolean(p);
+}
+
+/**
+ * Refuse a payment that does not cover the booking: missing amount, less than the
+ * booking total, or another currency. Nothing is recorded; the owner is told.
+ * Returns the reason, or null when the payment is fine.
+ */
+async function paymentMismatch(
+  db: DbOrTx,
+  booking: s.Booking,
+  amount: number | null,
+  currency: string | null,
+  ids: { checkoutId: string | null; intentId: string | null },
+): Promise<string | null> {
+  if (await alreadyRecorded(db, booking.id, ids.checkoutId, ids.intentId)) return null;
+  const org = await getOrganisation(db);
+  const expected = (org.currency || "gbp").toLowerCase();
+  let problem: string | null = null;
+  if (amount === null || !Number.isInteger(amount)) problem = "the event did not say how much was paid";
+  else if ((currency ?? "").toLowerCase() !== expected) problem = `it was paid in ${(currency ?? "an unknown currency").toUpperCase()}, not ${expected.toUpperCase()}`;
+  else if (amount < booking.totalPence) problem = `${fmtPence(amount)} was paid but the booking costs ${fmtPence(booking.totalPence)}`;
+  if (!problem) return null;
+  try {
+    const subject = `A payment for booking ${booking.reference} did not match`;
+    const lines = [
+      `Stripe reported a payment for booking ${booking.reference}, but ${problem}, so the booking was not confirmed and nothing was recorded.`,
+      "Please check the payment in the Stripe dashboard and refund it or contact the customer.",
+    ];
+    const link = adminBookingUrl(booking.id);
+    await sendRawEmail(db, {
+      to: env.ownerAlertEmail() ?? org.contactEmail,
+      subject,
+      html: wrapHtml(lines.map((l) => `<p>${escapeHtml(l)}</p>`).join("") + `<p><a href="${escapeHtml(link)}">Open the booking</a></p>`, brandFor(org), {
+        title: subject,
+      }),
+      text: [...lines, `Booking: ${link}`].join("\n\n"),
+      template: "owner_payment_mismatch",
+      venueId: booking.venueId,
+    });
+  } catch (e) {
+    console.error("[webhooks] payment mismatch alert failed:", e instanceof Error ? e.message : e);
+  }
+  return problem;
+}
+
 async function checkoutCompleted(db: DbOrTx, venue: Pick<s.Venue, "id">, type: string, session: Obj): Promise<WebhookResult> {
   if (session.payment_status !== "paid") return { type, ignored: "unpaid" };
   const checkoutId = str(session.id);
@@ -109,14 +176,20 @@ async function checkoutCompleted(db: DbOrTx, venue: Pick<s.Venue, "id">, type: s
   if (!bookingId && checkoutId) bookingId = await findBookingIdByCheckout(db, checkoutId);
   const booking = await bookingInVenue(db, bookingId, venue.id);
   if (!booking) return { type, ignored: "unknown booking", bookingId };
+  const intentId = idOf(session.payment_intent);
+  const amount = num(session.amount_total);
+  const currency = str(session.currency);
+  if (await paymentMismatch(db, booking, amount, currency, { checkoutId, intentId })) {
+    return { type, bookingId: booking.id, ignored: "amount mismatch" };
+  }
   const res = await confirmBookingPaid(db, {
     bookingId: booking.id,
     payment: {
       provider: "stripe",
       providerCheckoutId: checkoutId,
-      providerPaymentIntentId: idOf(session.payment_intent),
-      amountPence: num(session.amount_total) ?? booking.totalPence,
-      currency: str(session.currency) ?? "gbp",
+      providerPaymentIntentId: intentId,
+      amountPence: amount ?? 0,
+      currency: currency ?? "gbp",
     },
   });
   return { type, bookingId: booking.id, action: res.alreadyConfirmed ? "already_confirmed" : "confirmed" };
@@ -136,14 +209,19 @@ async function paymentIntentSucceeded(db: DbOrTx, venue: Pick<s.Venue, "id">, ty
   bookingId ??= metadataBookingId(pi);
   const booking = await bookingInVenue(db, bookingId, venue.id);
   if (!booking) return { type, ignored: "unknown booking", bookingId };
+  const amount = num(pi.amount_received) ?? num(pi.amount);
+  const currency = str(pi.currency);
+  if (await paymentMismatch(db, booking, amount, currency, { checkoutId: null, intentId })) {
+    return { type, bookingId: booking.id, ignored: "amount mismatch" };
+  }
   const res = await confirmBookingPaid(db, {
     bookingId: booking.id,
     payment: {
       provider: "stripe",
       providerPaymentIntentId: intentId,
       providerChargeId: idOf(pi.latest_charge),
-      amountPence: num(pi.amount_received) ?? num(pi.amount) ?? booking.totalPence,
-      currency: str(pi.currency) ?? "gbp",
+      amountPence: amount ?? 0,
+      currency: currency ?? "gbp",
     },
   });
   return { type, bookingId: booking.id, action: res.alreadyConfirmed ? "already_confirmed" : "confirmed" };
@@ -184,6 +262,13 @@ function refundStatus(v: unknown): s.Refund["status"] {
   return "pending";
 }
 
+/**
+ * Reconcile the charge's refunds with ours. Refunds made from BayPook are
+ * recorded first as `pending` rows (see `refundBooking`), so each provider refund
+ * is matched by its id, then to one of our pending rows without an id and with
+ * the same amount, and only otherwise recorded as a refund made outside BayPook.
+ * A known refund that failed stops counting (`settleRefund` gives the amount back).
+ */
 async function chargeRefunded(db: DbOrTx, venue: Pick<s.Venue, "id">, type: string, charge: Obj): Promise<WebhookResult> {
   const chargeId = str(charge.id);
   const payment = await findPaymentForCharge(db, venue.id, chargeId, idOf(charge.payment_intent));
@@ -192,28 +277,32 @@ async function chargeRefunded(db: DbOrTx, venue: Pick<s.Venue, "id">, type: stri
     await db.update(s.payments).set({ providerChargeId: chargeId, updatedAt: new Date() }).where(eq(s.payments.id, payment.id));
   }
 
-  const ours = await db.select().from(s.refunds).where(eq(s.refunds.paymentId, payment.id));
+  const ours = await db.select().from(s.refunds).where(eq(s.refunds.paymentId, payment.id)).orderBy(asc(s.refunds.createdAt));
   const list = obj(charge.refunds).data;
   let added = 0;
   let settled = 0;
 
   if (Array.isArray(list)) {
+    const matched = new Set<string>();
     for (const item of list) {
       const r = obj(item);
       const refundId = str(r.id);
       const amount = num(r.amount);
       if (!refundId || amount === null) continue;
       const status = refundStatus(r.status);
-      const known = ours.find((x) => x.providerRefundId === refundId);
+      const known =
+        ours.find((x) => x.providerRefundId === refundId) ??
+        ours.find((x) => !x.providerRefundId && x.status === "pending" && x.amountPence === amount && !matched.has(x.id));
       if (known) {
-        if (known.status !== status && status !== "pending") {
-          await db.update(s.refunds).set({ status, updatedAt: new Date() }).where(eq(s.refunds.id, known.id));
+        matched.add(known.id);
+        const nextStatus = status === "pending" ? known.status : status;
+        if (nextStatus !== known.status || known.providerRefundId !== refundId) {
+          await settleRefund(db, { refundId: known.id, status: nextStatus, providerRefundId: refundId });
           settled++;
         }
         continue;
       }
-      await recordProviderRefund(db, { paymentId: payment.id, amountPence: amount, providerRefundId: refundId, status });
-      added++;
+      if (await recordProviderRefund(db, { paymentId: payment.id, amountPence: amount, providerRefundId: refundId, status })) added++;
     }
   } else {
     // The charge's refunds list is not included: reconcile on the total instead.
@@ -221,18 +310,18 @@ async function chargeRefunded(db: DbOrTx, venue: Pick<s.Venue, "id">, type: stri
     const recorded = ours.filter((x) => x.status !== "failed").reduce((n, x) => n + x.amountPence, 0);
     for (const x of ours) {
       if (x.status === "pending" && total >= recorded) {
-        await db.update(s.refunds).set({ status: "succeeded", updatedAt: new Date() }).where(eq(s.refunds.id, x.id));
+        await settleRefund(db, { refundId: x.id, status: "succeeded" });
         settled++;
       }
     }
     if (total > recorded) {
-      await recordProviderRefund(db, {
+      const res = await recordProviderRefund(db, {
         paymentId: payment.id,
         amountPence: total - recorded,
         providerRefundId: `${chargeId ?? payment.id}:${total}`,
         status: "succeeded",
       });
-      added++;
+      if (res) added++;
     }
   }
   return { type, bookingId: payment.bookingId, action: `refunds added ${added}, settled ${settled}` };

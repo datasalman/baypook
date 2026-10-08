@@ -15,7 +15,9 @@ export const DELETE = withApi<Ctx>(async (_req, ctx) => {
   const db = await getDb();
   const hold = await getHold(db, id);
   if (hold && hold.status === "active") {
-    // A pending booking already made from this hold gives its places back too.
+    // A pending booking already made from this hold gives its places back too, and
+    // its payment page is expired with the provider (best effort, after commit) so
+    // it can no longer be paid.
     if (hold.bookingId) await cancelPendingBooking(db, { bookingId: hold.bookingId, reason: "abandoned" });
     await releaseHold(db, hold.id);
   }

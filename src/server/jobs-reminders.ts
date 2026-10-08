@@ -3,9 +3,12 @@
  *
  * Every confirmed booking that starts within the organisation's
  * `reminderHoursBefore` window (and has not started yet) gets the "reminder"
- * email once. Idempotent twice over: the booking's `reminderSentAt` is claimed
- * with a conditional update before sending, and the email itself is sent with
- * `dedupe`, so overlapping runs never send two reminders.
+ * email once per start time. The booking's `reminderSentAt` is the idempotency
+ * guard: it is claimed with a conditional update before sending, so overlapping
+ * runs never send two reminders. Moving a booking clears `reminderSentAt`, and
+ * the moved booking must get a reminder for its new time, so the email is sent
+ * WITHOUT `sendBookingEmail`'s dedupe (which matches on booking + template only
+ * and would swallow the second reminder).
  *
  * Skipped (left for nobody): bookings made less than 2 hours before the start
  * (they have only just had their confirmation) and customers without a real
@@ -86,7 +89,8 @@ export async function remindersJob(db: DbOrTx, now: Date = new Date()): Promise<
     }
 
     try {
-      const n = await sendBookingEmail(db, { bookingId: b.id, template: "reminder", dedupe: true });
+      // No `dedupe`: the claim above is the guard (see the comment at the top).
+      const n = await sendBookingEmail(db, { bookingId: b.id, template: "reminder", dedupe: false });
       if (n.status === "failed") throw new Error(n.error ?? "the email provider refused it");
       summary.sent++;
     } catch (e) {

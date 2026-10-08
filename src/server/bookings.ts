@@ -124,16 +124,21 @@ function isUniqueViolation(e: unknown): boolean {
 
 /**
  * The payment summary kept on the booking (see DECISIONS.md 11), derived from
- * its money columns.
+ * its money columns. What is still owed (`total - (paid - refunded)`) comes
+ * first: a booking whose places went up after a partial refund owes money, it is
+ * not "partially refunded". A cancelled booking owes nothing, so for it (and when
+ * nothing is owed) the refund state wins.
  */
 export function derivePaymentStatus(
-  b: Pick<s.Booking, "totalPence" | "paidPence" | "refundedPence" | "paymentMethod">,
+  b: Pick<s.Booking, "totalPence" | "paidPence" | "refundedPence" | "paymentMethod"> & { status?: s.Booking["status"] },
 ): s.Booking["paymentStatus"] {
-  if (b.refundedPence > 0) return b.refundedPence >= b.paidPence ? "refunded" : "partially_refunded";
-  if (b.paidPence <= 0) {
-    if (b.totalPence <= 0) return "paid";
-    return b.paymentMethod === "online_card" ? "unpaid" : "owed";
+  const unpaid = b.paymentMethod === "online_card" ? "unpaid" : "owed";
+  const net = b.paidPence - b.refundedPence;
+  if (b.status !== "cancelled" && b.totalPence - net > 0) {
+    return b.paidPence <= 0 && b.refundedPence <= 0 ? unpaid : "owed";
   }
+  if (b.refundedPence > 0) return b.refundedPence >= b.paidPence ? "refunded" : "partially_refunded";
+  if (b.paidPence <= 0) return b.totalPence <= 0 ? "paid" : unpaid;
   return b.paidPence >= b.totalPence ? "paid" : "owed";
 }
 
@@ -200,6 +205,40 @@ async function ensureSessionsAround(db: DbOrTx, venueId: string, startsAt: Date,
   await ensureVenueSessions(db, venueId, from, to < from ? from : to, tz);
 }
 
+/**
+ * The payment provider checkouts still open for a pending booking: its pending
+ * payment rows and its hold (when the hold is this booking's). Read them before
+ * the pending payments are marked failed.
+ */
+async function openCheckoutIds(tx: DbOrTx, booking: Pick<s.Booking, "id" | "holdId">): Promise<string[]> {
+  const ids = new Set<string>();
+  const pending = await tx
+    .select({ checkoutId: s.payments.providerCheckoutId })
+    .from(s.payments)
+    .where(and(eq(s.payments.bookingId, booking.id), eq(s.payments.status, "pending")));
+  for (const p of pending) if (p.checkoutId) ids.add(p.checkoutId);
+  if (booking.holdId) {
+    const [hold] = await tx
+      .select({ checkoutId: s.holds.checkoutId, bookingId: s.holds.bookingId })
+      .from(s.holds)
+      .where(eq(s.holds.id, booking.holdId))
+      .limit(1);
+    if (hold?.checkoutId && hold.bookingId === booking.id) ids.add(hold.checkoutId);
+  }
+  return Array.from(ids);
+}
+
+/** Close payment pages that can no longer confirm anything. Best effort, after commit; never throws. */
+async function expireCheckouts(db: DbOrTx, venueId: string, checkoutIds: string[]): Promise<void> {
+  if (checkoutIds.length === 0) return;
+  await sideEffect("expire checkout", async () => {
+    const venue = await loadVenue(db, venueId);
+    const resolved = await getPaymentProvider(venue.slug);
+    if (!resolved) return;
+    for (const id of checkoutIds) await sideEffect(`expire checkout ${id}`, () => resolved.provider.expireCheckout(id));
+  });
+}
+
 // ---------- creating bookings ----------
 
 export type BookingCustomerInput = { firstName: string; lastName: string; email: string; phone?: string | null };
@@ -234,10 +273,17 @@ export async function createPendingBookingFromHold(
   const isSlot = service.kind === "slot";
   const message = input.message?.trim() || null;
 
+  // The session's own room (holds made before sessions kept their room stored the service's).
+  let roomId = hold.roomId;
+  if (hold.sessionId) {
+    const [session] = await tx.select({ roomId: s.sessions.roomId }).from(s.sessions).where(eq(s.sessions.id, hold.sessionId)).limit(1);
+    if (session) roomId = session.roomId;
+  }
+
   const booking = await insertBooking(tx, {
     venueId: venue.id,
     serviceId: service.id,
-    roomId: hold.roomId,
+    roomId,
     sessionId: hold.sessionId,
     customerId: customer.id,
     startsAt: hold.startsAt,
@@ -307,7 +353,13 @@ export async function confirmBookingPaid(
     throw new BookingError("INVALID", "The payment amount is not valid.");
   }
 
-  type Outcome = { booking: s.Booking; alreadyConfirmed: boolean; newlyConfirmed: boolean; needsRefund: boolean };
+  type Outcome = {
+    booking: s.Booking;
+    alreadyConfirmed: boolean;
+    newlyConfirmed: boolean;
+    needsRefund: boolean;
+    rivalCheckoutIds: string[];
+  };
 
   const outcome: Outcome = await mapErrors(() =>
     db.transaction(async (tx): Promise<Outcome> => {
@@ -341,34 +393,53 @@ export async function confirmBookingPaid(
         if (Object.keys(fill).length) {
           await tx.update(s.payments).set({ ...fill, updatedAt: new Date() }).where(eq(s.payments.id, match.id));
         }
-        return { booking: before, alreadyConfirmed: true, newlyConfirmed: false, needsRefund: false };
+        return { booking: before, alreadyConfirmed: true, newlyConfirmed: false, needsRefund: false, rivalCheckoutIds: [] };
       }
 
       // ----- can the booking (still) be confirmed? -----
       let target: BookingStatus = before.status;
       let needsRefund = false;
+      let rivalCheckoutIds: string[] = [];
       if (before.status === "pending") {
         assertTransition("pending", "confirmed");
         target = "confirmed";
       } else if (before.status === "cancelled") {
         const venue = await loadVenue(tx, before.venueId);
         const service = await loadService(tx, before.serviceId);
+        // The customer pressed Pay again (a second pending booking replaced this one on
+        // the same hold) and then paid the first payment page. Reinstating this booking
+        // replaces that pending one, which would otherwise keep the same places forever.
+        const rival = await rivalPendingBooking(tx, before);
         try {
-          await assertBookable(tx, {
-            venue,
-            service,
-            sessionId: before.sessionId,
-            startsAt: before.startsAt,
-            endsAt: before.endsAt,
-            places: before.places,
-            now,
-            excludeBookingId: before.id,
-            ignoreTiming: true,
+          // A savepoint: if the time is no longer free, the other booking stays as it was.
+          rivalCheckoutIds = await tx.transaction(async (sp) => {
+            let ids: string[] = [];
+            if (rival) {
+              const res = await cancelPendingBookingInTx(sp, {
+                bookingId: rival.id,
+                reason: "abandoned",
+                action: "booking.cancel_pending.replaced_by_paid",
+              });
+              ids = res.checkoutIds;
+            }
+            await assertBookable(sp, {
+              venue,
+              service,
+              sessionId: before.sessionId,
+              startsAt: before.startsAt,
+              endsAt: before.endsAt,
+              places: before.places,
+              now,
+              excludeBookingId: before.id,
+              ignoreTiming: true,
+            });
+            return ids;
           });
           assertTransition("cancelled", "confirmed");
           target = "confirmed";
         } catch (e) {
           if (!(e instanceof AvailabilityError)) throw e;
+          rivalCheckoutIds = [];
           needsRefund = true;
         }
       }
@@ -408,7 +479,7 @@ export async function confirmBookingPaid(
       const paidPence = before.paidPence + payment.amountPence;
       const changes: BookingUpdate = {
         paidPence,
-        paymentStatus: derivePaymentStatus({ ...before, paidPence }),
+        paymentStatus: derivePaymentStatus({ ...before, paidPence, status: target }),
       };
       if (target !== before.status) {
         changes.status = target;
@@ -417,7 +488,12 @@ export async function confirmBookingPaid(
       }
       const booking = await updateBooking(tx, before.id, changes);
 
-      if (before.holdId && target === "confirmed") await markHoldConverted(tx, before.holdId, before.id);
+      if (before.holdId && target === "confirmed") {
+        // Only this booking's own hold is converted; a hold that has moved on to
+        // another booking is left pointing at it.
+        const [hold] = await tx.select().from(s.holds).where(eq(s.holds.id, before.holdId)).for("update");
+        if (hold && (hold.bookingId === before.id || hold.bookingId === null)) await markHoldConverted(tx, hold.id, before.id);
+      }
 
       await audit(tx, {
         user: null,
@@ -428,9 +504,17 @@ export async function confirmBookingPaid(
         before: pick(before, STATUS_FIELDS),
         after: { ...pick(booking, STATUS_FIELDS), provider: payment.provider, amountPence: payment.amountPence },
       });
-      return { booking, alreadyConfirmed: false, newlyConfirmed: target === "confirmed" && before.status !== "confirmed", needsRefund };
+      return {
+        booking,
+        alreadyConfirmed: false,
+        newlyConfirmed: target === "confirmed" && before.status !== "confirmed",
+        needsRefund,
+        rivalCheckoutIds,
+      };
     }),
   );
+
+  await expireCheckouts(db, outcome.booking.venueId, outcome.rivalCheckoutIds);
 
   if (outcome.newlyConfirmed) {
     const b = outcome.booking;
@@ -445,6 +529,15 @@ export async function confirmBookingPaid(
     await sideEffect("late payment alert", () => sendLatePaymentAlert(db, outcome.booking, payment.amountPence));
   }
   return { booking: outcome.booking, alreadyConfirmed: outcome.alreadyConfirmed };
+}
+
+/** Another pending booking that took over this booking's hold (the customer pressed Pay again). Locked. */
+async function rivalPendingBooking(tx: DbOrTx, booking: s.Booking): Promise<s.Booking | null> {
+  if (!booking.holdId) return null;
+  const [hold] = await tx.select().from(s.holds).where(eq(s.holds.id, booking.holdId)).for("update");
+  if (!hold?.bookingId || hold.bookingId === booking.id) return null;
+  const [rival] = await tx.select().from(s.bookings).where(eq(s.bookings.id, hold.bookingId)).for("update");
+  return rival && rival.status === "pending" ? rival : null;
 }
 
 async function ownerAlert(db: DbOrTx, venueId: string, subject: string, paragraphs: string[], link?: string): Promise<void> {
@@ -479,42 +572,60 @@ async function sendLatePaymentAlert(db: DbOrTx, booking: s.Booking, amountPence:
 
 // ---------- cancelling ----------
 
-/** pending -> cancelled (hold expired, payment declined or abandoned). No email. No-op unless pending. */
+export type PendingCancelReason = "expired" | "declined" | "abandoned";
+
+/**
+ * pending -> cancelled inside the caller's transaction (locks the booking row).
+ * Returns whether it changed anything and the checkouts that were still open, for
+ * the caller to expire after commit. No-op unless pending.
+ */
+export async function cancelPendingBookingInTx(
+  tx: DbOrTx,
+  input: { bookingId: string; reason: PendingCancelReason; action?: string },
+): Promise<{ cancelled: boolean; venueId: string | null; checkoutIds: string[] }> {
+  const before = await loadBookingRow(tx, input.bookingId, true);
+  if (before.status !== "pending") return { cancelled: false, venueId: before.venueId, checkoutIds: [] };
+  assertTransition("pending", "cancelled");
+  const checkoutIds = await openCheckoutIds(tx, before);
+  const booking = await updateBooking(tx, before.id, {
+    status: "cancelled",
+    cancelledAt: new Date(),
+    cancelReason: input.reason,
+  });
+  if (before.holdId) {
+    await tx
+      .update(s.holds)
+      .set({ status: input.reason === "expired" ? "expired" : "released" })
+      .where(and(eq(s.holds.id, before.holdId), eq(s.holds.status, "active")));
+  }
+  await tx
+    .update(s.payments)
+    .set({ status: "failed", updatedAt: new Date() })
+    .where(and(eq(s.payments.bookingId, before.id), eq(s.payments.status, "pending")));
+  await audit(tx, {
+    user: null,
+    action: input.action ?? `booking.cancel_pending.${input.reason}`,
+    entityType: "booking",
+    entityId: booking.id,
+    venueId: booking.venueId,
+    before: pick(before, ["status"]),
+    after: pick(booking, ["status", "cancelReason"]),
+  });
+  return { cancelled: true, venueId: before.venueId, checkoutIds };
+}
+
+/**
+ * pending -> cancelled (hold expired, payment declined or abandoned). No email.
+ * No-op unless pending. Unless the reason is "expired" (the provider or the
+ * expiry job closes those), the booking's open checkout is expired with the
+ * payment provider after commit, so it cannot be paid any more.
+ */
 export async function cancelPendingBooking(
   db: DbOrTx,
-  input: { bookingId: string; reason: "expired" | "declined" | "abandoned" },
+  input: { bookingId: string; reason: PendingCancelReason },
 ): Promise<void> {
-  await mapErrors(() =>
-    db.transaction(async (tx) => {
-      const before = await loadBookingRow(tx, input.bookingId, true);
-      if (before.status !== "pending") return;
-      assertTransition("pending", "cancelled");
-      const booking = await updateBooking(tx, before.id, {
-        status: "cancelled",
-        cancelledAt: new Date(),
-        cancelReason: input.reason,
-      });
-      if (before.holdId) {
-        await tx
-          .update(s.holds)
-          .set({ status: input.reason === "expired" ? "expired" : "released" })
-          .where(and(eq(s.holds.id, before.holdId), eq(s.holds.status, "active")));
-      }
-      await tx
-        .update(s.payments)
-        .set({ status: "failed", updatedAt: new Date() })
-        .where(and(eq(s.payments.bookingId, before.id), eq(s.payments.status, "pending")));
-      await audit(tx, {
-        user: null,
-        action: `booking.cancel_pending.${input.reason}`,
-        entityType: "booking",
-        entityId: booking.id,
-        venueId: booking.venueId,
-        before: pick(before, ["status"]),
-        after: pick(booking, ["status", "cancelReason"]),
-      });
-    }),
-  );
+  const res = await mapErrors(() => db.transaction((tx) => cancelPendingBookingInTx(tx, input)));
+  if (res.cancelled && res.venueId && input.reason !== "expired") await expireCheckouts(db, res.venueId, res.checkoutIds);
 }
 
 /**
@@ -541,14 +652,16 @@ export async function cancelBooking(
     });
   }
 
-  const booking = await mapErrors(() =>
+  const { booking, checkoutIds } = await mapErrors(() =>
     db.transaction(async (tx) => {
       const before = await loadBookingRow(tx, input.bookingId, true);
       assertTransition(before.status, "cancelled");
+      const open = before.status === "pending" ? await openCheckoutIds(tx, before) : [];
       const after = await updateBooking(tx, before.id, {
         status: "cancelled",
         cancelledAt: input.now ?? new Date(),
         cancelReason: input.reason.trim() || null,
+        paymentStatus: derivePaymentStatus({ ...before, status: "cancelled" }),
       });
       if (before.holdId) {
         await tx
@@ -569,10 +682,11 @@ export async function cancelBooking(
         before: pick(before, ["status", "cancelReason", ...STATUS_FIELDS]),
         after: pick(after, ["status", "cancelReason", ...STATUS_FIELDS]),
       });
-      return after;
+      return { booking: after, checkoutIds: open };
     }),
   );
 
+  await expireCheckouts(db, booking.venueId, checkoutIds);
   if (current.status !== "pending") {
     await emailCustomer(db, "cancellation email", { bookingId: booking.id, template: "cancellation" });
   }
@@ -583,56 +697,82 @@ export async function cancelBooking(
 // ---------- refunds ----------
 
 /**
- * Give money back. Managers and the owner only. Online payments are refunded with
- * the payment provider (idempotency key `refund_<bookingId>_<n>`); cash and card
- * machine payments are recorded only (the money goes back over the counter).
+ * Give money back. Managers and the owner only.
+ *
+ * Race-safe in three steps: (1) in one transaction the booking row is locked,
+ * `paid - refunded` is re-checked and a `pending` refund row is inserted, which
+ * reserves the amount (it counts in `refundedPence` straight away, so a second
+ * refund at the same moment sees it); (2) online payments are refunded with the
+ * payment provider using the refund row's id as the idempotency key; cash and
+ * card machine payments are recorded only (the money goes back over the
+ * counter); (3) the row is settled to succeeded or failed. A failed refund is
+ * not counted: its reservation is given back.
  */
 export async function refundBooking(
   db: DbOrTx,
   input: { bookingId: string; user: CurrentUser; amountPence: number; reason: string },
 ): Promise<s.Refund> {
   const { user } = input;
-  const booking = await loadBookingRow(db, input.bookingId);
-  if (!canRefund(user, booking.venueId)) throw new BookingError("FORBIDDEN", "Only a manager or the owner can give a refund.");
+  const current = await loadBookingRow(db, input.bookingId);
+  if (!canRefund(user, current.venueId)) throw new BookingError("FORBIDDEN", "Only a manager or the owner can give a refund.");
   const amount = input.amountPence;
-  const refundable = booking.paidPence - booking.refundedPence;
   if (!Number.isInteger(amount) || amount < 1) throw new BookingError("INVALID", "Enter an amount to refund.");
-  if (refundable <= 0) throw new BookingError("STATE", "There is nothing left to refund on this booking.");
-  if (amount > refundable) {
-    throw new BookingError("LIMIT", `You can refund up to ${fmtPence(refundable)}.`, { limit: refundable });
-  }
+  const venue = await loadVenue(db, current.venueId);
+  const resolved = await getPaymentProvider(venue.slug);
 
-  const payments = await db
-    .select()
-    .from(s.payments)
-    .where(and(eq(s.payments.bookingId, booking.id), inArray(s.payments.status, ["succeeded", "partially_refunded", "disputed"])))
-    .orderBy(asc(s.payments.createdAt));
-  const existingRefunds = await db.select().from(s.refunds).where(eq(s.refunds.bookingId, booking.id));
-  const refundedByPayment = new Map<string, number>();
-  for (const r of existingRefunds) {
-    if (r.status === "failed") continue;
-    refundedByPayment.set(r.paymentId, (refundedByPayment.get(r.paymentId) ?? 0) + r.amountPence);
-  }
-  const candidates = payments
-    .map((p) => ({ payment: p, left: p.amountPence - (refundedByPayment.get(p.id) ?? 0) }))
-    .filter((c) => c.left > 0)
-    // Online card payments first, then the largest.
-    .sort((a, b) => Number(isOnline(b.payment)) - Number(isOnline(a.payment)) || b.left - a.left);
-  const chosen = candidates.find((c) => c.left >= amount);
-  if (!chosen) {
-    const most = candidates.reduce((n, c) => Math.max(n, c.left), 0);
-    if (most <= 0) throw new BookingError("STATE", "There is no payment on this booking to refund.");
-    throw new BookingError("LIMIT", `You can refund up to ${fmtPence(most)} in one go; then refund the rest separately.`, { limit: most });
-  }
-  const payment = chosen.payment;
+  // (1) Reserve.
+  const { refund: reserved, payment } = await mapErrors(() =>
+    db.transaction(async (tx) => {
+      const before = await loadBookingRow(tx, current.id, true);
+      const refundable = before.paidPence - before.refundedPence;
+      if (refundable <= 0) throw new BookingError("STATE", "There is nothing left to refund on this booking.");
+      if (amount > refundable) {
+        throw new BookingError("LIMIT", `You can refund up to ${fmtPence(refundable)}.`, { limit: refundable });
+      }
+      const payments = await tx
+        .select()
+        .from(s.payments)
+        .where(and(eq(s.payments.bookingId, before.id), inArray(s.payments.status, ["succeeded", "partially_refunded", "refunded", "disputed"])))
+        .orderBy(asc(s.payments.createdAt));
+      const refundedByPayment = await refundedByPaymentId(tx, before.id);
+      const candidates = payments
+        .map((p) => ({ payment: p, left: p.amountPence - (refundedByPayment.get(p.id) ?? 0) }))
+        .filter((c) => c.left > 0)
+        // Online card payments first, then the largest.
+        .sort((a, b) => Number(isOnline(b.payment)) - Number(isOnline(a.payment)) || b.left - a.left);
+      const chosen = candidates.find((c) => c.left >= amount);
+      if (!chosen) {
+        const most = candidates.reduce((n, c) => Math.max(n, c.left), 0);
+        if (most <= 0) throw new BookingError("STATE", "There is no payment on this booking to refund.");
+        throw new BookingError("LIMIT", `You can refund up to ${fmtPence(most)} in one go; then refund the rest separately.`, { limit: most });
+      }
+      if (isOnline(chosen.payment) && !resolved) {
+        throw new BookingError("UNAVAILABLE", "Card refunds are not set up for this venue yet (no Stripe key).");
+      }
+      const [row] = await tx
+        .insert(s.refunds)
+        .values({
+          paymentId: chosen.payment.id,
+          bookingId: before.id,
+          amountPence: amount,
+          reason: input.reason.trim(),
+          status: "pending",
+          providerRefundId: null,
+          createdBy: user.id,
+        })
+        .returning();
+      await syncPaymentRefundStatus(tx, chosen.payment.id);
+      const refundedPence = before.refundedPence + amount;
+      await updateBooking(tx, before.id, { refundedPence, paymentStatus: derivePaymentStatus({ ...before, refundedPence }) });
+      return { refund: row, payment: chosen.payment };
+    }),
+  );
 
+  // (2) Ask the payment provider.
   let status: s.Refund["status"] = "succeeded";
   let providerRefundId: string | null = null;
-  if (isOnline(payment)) {
-    const venue = await loadVenue(db, booking.venueId);
-    const resolved = await getPaymentProvider(venue.slug);
-    if (!resolved) throw new BookingError("UNAVAILABLE", "Card refunds are not set up for this venue yet (no Stripe key).");
-    const n = existingRefunds.length + 1;
+  let failure = "The card refund was declined by the payment provider.";
+  if (isOnline(payment) && resolved) {
     try {
       const result = await resolved.provider.refund({
         venueSlug: venue.slug,
@@ -640,116 +780,166 @@ export async function refundBooking(
         providerChargeId: payment.providerChargeId,
         amountPence: amount,
         reason: input.reason,
-        idempotencyKey: `refund_${booking.id}_${n}`,
+        idempotencyKey: `refund_${reserved.id}`,
       });
       status = result.status;
       providerRefundId = result.providerRefundId;
     } catch (e) {
       logSideEffectError("provider refund", e);
-      throw new BookingError("UNAVAILABLE", `The card refund did not go through: ${e instanceof Error ? e.message : "unknown error"}.`);
+      status = "failed";
+      failure = `The card refund did not go through: ${e instanceof Error ? e.message : "unknown error"}.`;
     }
   }
 
-  const refund = await db.transaction(async (tx) => {
-    const before = await loadBookingRow(tx, booking.id, true);
-    const [row] = await tx
-      .insert(s.refunds)
-      .values({
-        paymentId: payment.id,
-        bookingId: before.id,
-        amountPence: amount,
-        reason: input.reason.trim(),
-        status,
-        providerRefundId,
-        createdBy: user.id,
-      })
-      .returning();
-    if (status === "failed") return row;
-
-    const paymentRefunded = (refundedByPayment.get(payment.id) ?? 0) + amount;
-    await tx
-      .update(s.payments)
-      .set({
-        status: payment.status === "disputed" ? "disputed" : paymentRefunded >= payment.amountPence ? "refunded" : "partially_refunded",
-        updatedAt: new Date(),
-      })
-      .where(eq(s.payments.id, payment.id));
-    const refundedPence = before.refundedPence + amount;
-    const after = await updateBooking(tx, before.id, {
-      refundedPence,
-      paymentStatus: derivePaymentStatus({ ...before, refundedPence }),
-    });
-    await audit(tx, {
-      user,
-      action: "booking.refund",
-      entityType: "booking",
-      entityId: before.id,
-      venueId: before.venueId,
-      before: pick(before, STATUS_FIELDS),
-      after: { ...pick(after, STATUS_FIELDS), refundId: row.id, amountPence: amount, reason: row.reason, provider: payment.provider },
-    });
-    return row;
-  });
-
-  if (status === "failed") throw new BookingError("UNAVAILABLE", "The card refund was declined by the payment provider.");
-  await emailCustomer(db, "refund email", { bookingId: booking.id, template: "refund", extra: { refundAmountPence: amount } });
-  return refund;
+  // (3) Settle.
+  const settled = await settleRefund(db, { refundId: reserved.id, status, providerRefundId, user });
+  if (!settled || settled.refund.status === "failed") throw new BookingError("UNAVAILABLE", failure);
+  await emailCustomer(db, "refund email", { bookingId: current.id, template: "refund", extra: { refundAmountPence: amount } });
+  return settled.refund;
 }
 
 function isOnline(p: s.Payment): boolean {
   return p.provider === "stripe" || p.provider === "demo";
 }
 
-/** Apply a refund made outside BayPook (Stripe dashboard), found by the charge.refunded webhook. */
+/** Refunds counted against each payment of a booking (everything but failed ones). */
+async function refundedByPaymentId(tx: DbOrTx, bookingId: string): Promise<Map<string, number>> {
+  const rows = await tx
+    .select({ paymentId: s.refunds.paymentId, amount: s.refunds.amountPence, status: s.refunds.status })
+    .from(s.refunds)
+    .where(eq(s.refunds.bookingId, bookingId));
+  const out = new Map<string, number>();
+  for (const r of rows) if (r.status !== "failed") out.set(r.paymentId, (out.get(r.paymentId) ?? 0) + r.amount);
+  return out;
+}
+
+/** Set a payment's refund state from its counted refunds (a disputed payment stays disputed). */
+async function syncPaymentRefundStatus(tx: DbOrTx, paymentId: string): Promise<void> {
+  const [payment] = await tx.select().from(s.payments).where(eq(s.payments.id, paymentId)).limit(1);
+  if (!payment || !["succeeded", "partially_refunded", "refunded"].includes(payment.status)) return;
+  const rows = await tx
+    .select({ amount: s.refunds.amountPence, status: s.refunds.status })
+    .from(s.refunds)
+    .where(eq(s.refunds.paymentId, paymentId));
+  const refunded = rows.filter((r) => r.status !== "failed").reduce((n, r) => n + r.amount, 0);
+  const status: s.Payment["status"] = refunded <= 0 ? "succeeded" : refunded >= payment.amountPence ? "refunded" : "partially_refunded";
+  if (status !== payment.status) {
+    await tx.update(s.payments).set({ status, updatedAt: new Date() }).where(eq(s.payments.id, paymentId));
+  }
+}
+
+/**
+ * Move a refund row to a new status (and attach the provider's refund id), keeping
+ * the booking's `refundedPence` and payment states in step: a refund that goes to
+ * `failed` stops counting, one that comes back from `failed` counts again. Used by
+ * `refundBooking` and the `charge.refunded` webhook. Returns null for an unknown id.
+ */
+export async function settleRefund(
+  db: DbOrTx,
+  input: { refundId: string; status: s.Refund["status"]; providerRefundId?: string | null; user?: CurrentUser | null },
+): Promise<{ refund: s.Refund; booking: s.Booking } | null> {
+  if (!isUuid(input.refundId)) return null;
+  return db.transaction(async (tx) => {
+    const [peek] = await tx.select({ bookingId: s.refunds.bookingId }).from(s.refunds).where(eq(s.refunds.id, input.refundId)).limit(1);
+    if (!peek) return null;
+    // Lock order: the booking row first, as everywhere else.
+    const before = await loadBookingRow(tx, peek.bookingId, true);
+    const [row] = await tx.select().from(s.refunds).where(eq(s.refunds.id, input.refundId)).for("update");
+    if (!row) return null;
+
+    let status = input.status;
+    let providerRefundId = input.providerRefundId ?? row.providerRefundId;
+    if (input.providerRefundId && input.providerRefundId !== row.providerRefundId) {
+      // The webhook may already have recorded this provider refund as a row of its own.
+      const [other] = await tx
+        .select({ id: s.refunds.id })
+        .from(s.refunds)
+        .where(and(eq(s.refunds.providerRefundId, input.providerRefundId), ne(s.refunds.id, row.id)))
+        .limit(1);
+      if (other) {
+        status = "failed";
+        providerRefundId = row.providerRefundId;
+      }
+    }
+    if (status === row.status && providerRefundId === row.providerRefundId) return { refund: row, booking: before };
+
+    const [refund] = await tx
+      .update(s.refunds)
+      .set({ status, providerRefundId, updatedAt: new Date() })
+      .where(eq(s.refunds.id, row.id))
+      .returning();
+    const wasCounted = row.status !== "failed";
+    const isCounted = status !== "failed";
+    let booking = before;
+    if (wasCounted !== isCounted) {
+      const refundedPence = Math.max(0, before.refundedPence + (isCounted ? row.amountPence : -row.amountPence));
+      booking = await updateBooking(tx, before.id, { refundedPence, paymentStatus: derivePaymentStatus({ ...before, refundedPence }) });
+    }
+    await syncPaymentRefundStatus(tx, row.paymentId);
+    if (row.status !== status) {
+      await audit(tx, {
+        user: input.user ?? null,
+        action: status === "failed" ? "booking.refund_failed" : "booking.refund",
+        entityType: "booking",
+        entityId: before.id,
+        venueId: before.venueId,
+        before: { ...pick(before, STATUS_FIELDS), refundStatus: row.status },
+        after: { ...pick(booking, STATUS_FIELDS), refundId: row.id, refundStatus: status, amountPence: row.amountPence, reason: row.reason },
+      });
+    }
+    return { refund, booking };
+  });
+}
+
+/**
+ * Apply a refund made outside BayPook (Stripe dashboard), found by the
+ * charge.refunded webhook. Returns null when the payment is unknown or the
+ * provider refund id is already recorded (the unique index on it).
+ */
 export async function recordProviderRefund(
   db: DbOrTx,
   input: { paymentId: string; amountPence: number; providerRefundId: string; status: s.Refund["status"]; reason?: string },
 ): Promise<{ refund: s.Refund; booking: s.Booking } | null> {
-  const result = await db.transaction(async (tx) => {
-    const [payment] = await tx.select().from(s.payments).where(eq(s.payments.id, input.paymentId)).limit(1);
-    if (!payment) return null;
-    const before = await loadBookingRow(tx, payment.bookingId, true);
-    const [row] = await tx
-      .insert(s.refunds)
-      .values({
-        paymentId: payment.id,
-        bookingId: before.id,
-        amountPence: input.amountPence,
-        reason: input.reason ?? "Refunded in the payment provider's dashboard",
-        status: input.status,
-        providerRefundId: input.providerRefundId,
-        createdBy: null,
-      })
-      .returning();
-    if (input.status === "failed") return { refund: row, booking: before };
-    const others = await tx
-      .select({ amount: s.refunds.amountPence, status: s.refunds.status })
-      .from(s.refunds)
-      .where(eq(s.refunds.paymentId, payment.id));
-    const paymentRefunded = others.filter((r) => r.status !== "failed").reduce((n, r) => n + r.amount, 0);
-    await tx
-      .update(s.payments)
-      .set({
-        status: payment.status === "disputed" ? "disputed" : paymentRefunded >= payment.amountPence ? "refunded" : "partially_refunded",
-        updatedAt: new Date(),
-      })
-      .where(eq(s.payments.id, payment.id));
-    const refundedPence = before.refundedPence + input.amountPence;
-    const after = await updateBooking(tx, before.id, {
-      refundedPence,
-      paymentStatus: derivePaymentStatus({ ...before, refundedPence }),
+  let result: { refund: s.Refund; booking: s.Booking } | null;
+  try {
+    result = await db.transaction(async (tx) => {
+      const [payment] = await tx.select().from(s.payments).where(eq(s.payments.id, input.paymentId)).limit(1);
+      if (!payment) return null;
+      const before = await loadBookingRow(tx, payment.bookingId, true);
+      const [row] = await tx
+        .insert(s.refunds)
+        .values({
+          paymentId: payment.id,
+          bookingId: before.id,
+          amountPence: input.amountPence,
+          reason: input.reason ?? "Refunded in the payment provider's dashboard",
+          status: input.status,
+          providerRefundId: input.providerRefundId,
+          createdBy: null,
+        })
+        .returning();
+      if (input.status === "failed") return { refund: row, booking: before };
+      await syncPaymentRefundStatus(tx, payment.id);
+      const refundedPence = before.refundedPence + input.amountPence;
+      const after = await updateBooking(tx, before.id, {
+        refundedPence,
+        paymentStatus: derivePaymentStatus({ ...before, refundedPence }),
+      });
+      await audit(tx, {
+        user: null,
+        action: "booking.refund_external",
+        entityType: "booking",
+        entityId: before.id,
+        venueId: before.venueId,
+        before: pick(before, STATUS_FIELDS),
+        after: { ...pick(after, STATUS_FIELDS), refundId: row.id, providerRefundId: input.providerRefundId, amountPence: input.amountPence },
+      });
+      return { refund: row, booking: after };
     });
-    await audit(tx, {
-      user: null,
-      action: "booking.refund_external",
-      entityType: "booking",
-      entityId: before.id,
-      venueId: before.venueId,
-      before: pick(before, STATUS_FIELDS),
-      after: { ...pick(after, STATUS_FIELDS), refundId: row.id, providerRefundId: input.providerRefundId, amountPence: input.amountPence },
-    });
-    return { refund: row, booking: after };
-  });
+  } catch (e) {
+    if (isUniqueViolation(e)) return null;
+    throw e;
+  }
   if (result && result.refund.status !== "failed") {
     await emailCustomer(db, "refund email", { bookingId: result.booking.id, template: "refund", extra: { refundAmountPence: input.amountPence } });
   }
@@ -797,20 +987,21 @@ export async function moveBooking(
 
   const booking = await mapErrors(() =>
     db.transaction(async (tx) => {
+      // Lock order everywhere: booking row, then session, then room (assertBookable).
+      const before = await loadBookingRow(tx, current.id, true);
+      if (before.status !== "confirmed") throw new BookingError("STATE", "Only a confirmed booking can be moved.");
       const slot = await assertBookable(tx, {
         venue,
         service,
         sessionId: service.kind === "session" ? input.sessionId : null,
         startsAt,
         endsAt,
-        places: current.places,
+        places: before.places,
         now,
         tz,
-        excludeBookingId: current.id,
+        excludeBookingId: before.id,
         ignoreTiming: true,
       });
-      const before = await loadBookingRow(tx, current.id, true);
-      if (before.status !== "confirmed") throw new BookingError("STATE", "Only a confirmed booking can be moved.");
       const after = await updateBooking(tx, before.id, {
         sessionId: slot.sessionId,
         roomId,
@@ -837,10 +1028,12 @@ export async function moveBooking(
 }
 
 /**
- * Change places, options or add-ons. Re-quotes from the catalogue and re-checks
- * capacity (excluding this booking). A higher total leaves the difference owed (to
- * pay in store); a lower one leaves the booking paid and returns a negative delta
- * so the admin can offer a refund.
+ * Change places, options or add-ons. Re-checks capacity (excluding this booking).
+ * Items already on the booking keep the unit price they were sold at (quantities
+ * up or down; archived items already on it stay allowed); only places beyond
+ * what was sold, and new items, are priced from today's catalogue. A higher total
+ * leaves the difference owed (to pay in store); a lower one leaves the booking
+ * paid and returns a negative delta so the admin can offer a refund.
  */
 export async function changeBookingCounts(
   db: DbOrTx,
@@ -863,24 +1056,29 @@ export async function changeBookingCounts(
   const now = input.now ?? new Date();
 
   return mapErrors(async () => {
-    const q = quoteForService(null, { service, venue, lines: input.lines, addOns: input.addOns });
-    const endsAt = service.kind === "slot" ? addMinutes(current.startsAt, service.lengthMinutes + q.extraMinutes) : current.endsAt;
-    if (service.kind === "slot") await ensureSessionsAround(db, venue.id, current.startsAt, endsAt, tz);
+    // Times do not depend on prices: work out the new end (and its sessions) before locking.
+    const draft = requoteKeepingPrices(service, venue, current, input.lines, input.addOns);
+    const draftEndsAt = service.kind === "slot" ? addMinutes(current.startsAt, service.lengthMinutes + draft.extraMinutes) : current.endsAt;
+    if (service.kind === "slot") await ensureSessionsAround(db, venue.id, current.startsAt, draftEndsAt, tz);
 
     const booking = await db.transaction(async (tx) => {
+      // Lock order everywhere: booking row, then session, then room (assertBookable).
+      const before = await loadBookingRow(tx, current.id, true);
+      if (before.status !== "confirmed") throw new BookingError("STATE", "Only a confirmed booking can be changed.");
+      const q = requoteKeepingPrices(service, venue, before, input.lines, input.addOns);
+      const endsAt = service.kind === "slot" ? addMinutes(before.startsAt, service.lengthMinutes + q.extraMinutes) : before.endsAt;
       await assertBookable(tx, {
         venue,
         service,
-        sessionId: current.sessionId,
-        startsAt: current.startsAt,
+        sessionId: before.sessionId,
+        startsAt: before.startsAt,
         endsAt,
         places: q.places,
         now,
         tz,
-        excludeBookingId: current.id,
+        excludeBookingId: before.id,
         ignoreTiming: true,
       });
-      const before = await loadBookingRow(tx, current.id, true);
       const next = { ...before, totalPence: q.totalPence };
       const after = await updateBooking(tx, before.id, {
         lines: q.lines,
@@ -905,6 +1103,69 @@ export async function changeBookingCounts(
     await sideEffect("calendar update", () => syncBookingToCalendar(db, booking.id, "update"));
     return { booking, delta: booking.totalPence - (booking.paidPence - booking.refundedPence) };
   });
+}
+
+/**
+ * Split `qty` over the price tranches already sold (oldest first), and price any
+ * places beyond them at today's price. Tranches with the same price merge.
+ */
+export function keepSoldPrices(qty: number, todayPence: number, sold: { qty: number; unitPence: number }[]): { qty: number; unitPence: number }[] {
+  const out: { qty: number; unitPence: number }[] = [];
+  const push = (n: number, unitPence: number) => {
+    if (n <= 0) return;
+    const same = out.find((x) => x.unitPence === unitPence);
+    if (same) same.qty += n;
+    else out.push({ qty: n, unitPence });
+  };
+  let left = qty;
+  for (const t of sold) {
+    if (left <= 0) break;
+    const n = Math.min(Math.max(0, t.qty), left);
+    push(n, t.unitPence);
+    left -= n;
+  }
+  push(left, todayPence);
+  return out;
+}
+
+/**
+ * Quote a change to a booking: today's catalogue checks the rules (limits,
+ * places, extra minutes), items already on the booking may be archived, and
+ * their sold quantities keep their sold unit prices (`keepSoldPrices`). An item
+ * sold at two prices becomes two lines.
+ */
+function requoteKeepingPrices(
+  service: ServiceWithCatalogue,
+  venue: s.Venue,
+  booking: Pick<s.Booking, "lines" | "addOns">,
+  lines: { optionId: string; qty: number }[],
+  addOns: { addOnId: string; qty: number }[],
+): Quote {
+  const soldOptions = new Set(booking.lines.map((l) => l.optionId));
+  const soldAddOns = new Set(booking.addOns.map((a) => a.addOnId));
+  const catalogue: ServiceWithCatalogue = {
+    ...service,
+    options: service.options.map((o) => (soldOptions.has(o.id) ? { ...o, archivedAt: null } : o)),
+    addOns: service.addOns.map((a) => (soldAddOns.has(a.id) ? { ...a, archivedAt: null } : a)),
+  };
+  const q = quoteForService(null, { service: catalogue, venue, lines, addOns });
+  const outLines = q.lines.flatMap((l) =>
+    keepSoldPrices(
+      l.qty,
+      l.unitPence,
+      booking.lines.filter((x) => x.optionId === l.optionId),
+    ).map((t) => ({ ...l, qty: t.qty, unitPence: t.unitPence, totalPence: t.qty * t.unitPence })),
+  );
+  const outAddOns = q.addOns.flatMap((a) => {
+    const minutesEach = a.qty > 0 ? a.extraMinutes / a.qty : 0;
+    return keepSoldPrices(
+      a.qty,
+      a.unitPence,
+      booking.addOns.filter((x) => x.addOnId === a.addOnId),
+    ).map((t) => ({ ...a, qty: t.qty, unitPence: t.unitPence, totalPence: t.qty * t.unitPence, extraMinutes: minutesEach * t.qty }));
+  });
+  const subtotalPence = outLines.reduce((n, l) => n + l.totalPence, 0) + outAddOns.reduce((n, a) => n + a.totalPence, 0);
+  return { ...q, lines: outLines, addOns: outAddOns, subtotalPence, totalPence: subtotalPence };
 }
 
 /** Record money taken in store (cash or the card machine). */
@@ -959,11 +1220,26 @@ export async function markNoShow(
   const { user } = input;
   const current = await loadBookingRow(db, input.bookingId);
   requireAccess(user, current.venueId);
+  // A no-show's places are free for others; taking them back needs them to still be free.
+  const venue = input.undo ? await loadVenue(db, current.venueId) : null;
+  const service = input.undo ? await loadService(db, current.serviceId) : null;
   return mapErrors(() =>
     db.transaction(async (tx) => {
       const before = await loadBookingRow(tx, current.id, true);
       const to: BookingStatus = input.undo ? "confirmed" : "no_show";
       assertTransition(before.status, to);
+      if (venue && service) {
+        await assertBookable(tx, {
+          venue,
+          service,
+          sessionId: before.sessionId,
+          startsAt: before.startsAt,
+          endsAt: before.endsAt,
+          places: before.places,
+          excludeBookingId: before.id,
+          ignoreTiming: true,
+        });
+      }
       const after = await updateBooking(tx, before.id, { status: to, noShowAt: input.undo ? null : new Date() });
       await audit(tx, {
         user,
@@ -1052,8 +1328,16 @@ export async function createManualBooking(
     customerId?: string | null;
     birthdayChild?: { firstName: string; age?: number | null } | null;
     notes?: string | null;
-    payment: { method: "cash" | "card_machine" | "pay_in_store"; amountPence?: number | null };
+    /**
+     * How they paid. `imported`: money taken by the system the booking was imported
+     * from (a payment row from provider `import` when `amountPence` > 0).
+     */
+    payment: { method: "cash" | "card_machine" | "pay_in_store" | "imported"; amountPence?: number | null };
     sendEmail: boolean;
+    /** "import" for bookings brought over from another system (with `externalRef`). Default "manual". */
+    source?: "manual" | "import";
+    /** The booking's reference in the system it was imported from. */
+    externalRef?: string | null;
     now?: Date;
   },
 ): Promise<s.Booking> {
@@ -1063,7 +1347,10 @@ export async function createManualBooking(
   const firstName = input.customer.firstName?.trim() ?? "";
   if (!firstName) throw new BookingError("INVALID", "Enter the customer's first name.");
   const method = input.payment.method;
-  if (!["cash", "card_machine", "pay_in_store"].includes(method)) throw new BookingError("INVALID", "Choose how they are paying.");
+  if (!["cash", "card_machine", "pay_in_store", "imported"].includes(method)) throw new BookingError("INVALID", "Choose how they are paying.");
+  const source = input.source ?? "manual";
+  if (source !== "manual" && source !== "import") throw new BookingError("INVALID", "Unknown booking source.");
+  const externalRef = input.externalRef?.trim() || null;
   const org = await getOrganisation(db);
   const tz = org.timezone || DEFAULT_TZ;
   const now = input.now ?? new Date();
@@ -1083,7 +1370,8 @@ export async function createManualBooking(
       endsAt = addMinutes(st, service.lengthMinutes + q.extraMinutes);
       await ensureSessionsAround(db, venue.id, startsAt, endsAt, tz);
     }
-    const amountPaid = method === "pay_in_store" ? 0 : (input.payment.amountPence ?? q.totalPence);
+    const amountPaid =
+      method === "pay_in_store" ? 0 : method === "imported" ? (input.payment.amountPence ?? 0) : (input.payment.amountPence ?? q.totalPence);
     if (!Number.isInteger(amountPaid) || amountPaid < 0) throw new BookingError("INVALID", "Enter the amount taken.");
 
     return db.transaction(async (tx) => {
@@ -1139,17 +1427,18 @@ export async function createManualBooking(
         refundedPence: 0,
         birthdayChildFirstName: isSlot ? input.birthdayChild?.firstName?.trim() || null : null,
         birthdayChildAge: isSlot ? (input.birthdayChild?.age ?? null) : null,
-        source: "manual",
+        source,
         paymentMethod: method,
         paymentStatus: derivePaymentStatus({ totalPence: q.totalPence, paidPence: amountPaid, refundedPence: 0, paymentMethod: method }),
         notes: input.notes?.trim() || null,
+        externalRef,
         createdBy: user.id,
       });
       if (amountPaid > 0 && method !== "pay_in_store") {
         await tx.insert(s.payments).values({
           bookingId: booking.id,
           venueId: venue.id,
-          provider: "manual",
+          provider: method === "imported" ? "import" : "manual",
           amountPence: amountPaid,
           currency: org.currency,
           status: "succeeded",
@@ -1159,12 +1448,15 @@ export async function createManualBooking(
       }
       await audit(tx, {
         user,
-        action: "booking.create_manual",
+        action: source === "import" ? "booking.import" : "booking.create_manual",
         entityType: "booking",
         entityId: booking.id,
         venueId: venue.id,
         before: null,
-        after: pick(booking, ["reference", "status", "paymentStatus", "paymentMethod", "totalPence", "paidPence", "places", "startsAt", "endsAt"]),
+        after: {
+          ...pick(booking, ["reference", "status", "paymentStatus", "paymentMethod", "totalPence", "paidPence", "places", "startsAt", "endsAt"]),
+          ...(externalRef ? { externalRef } : {}),
+        },
       });
       return { booking, customerEmail: customer.email };
     });

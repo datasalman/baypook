@@ -42,7 +42,8 @@ export async function adminSessionChoices(
   await ensureSessions(db, service, venue, date, date, tz);
   const from = startOfLocalDay(date, tz);
   const to = endOfLocalDay(date, tz);
-  const state = await loadWindowState(db, { venueId: venue.id, roomId: service.roomId, from, to, now });
+  // Whole venue, not service.roomId: a session kept in its old room after a room change must still be offered.
+  const state = await loadWindowState(db, { venueId: venue.id, from, to, now });
   const sessions = state.sessions.filter(
     (x) => x.serviceId === service.id && x.startsAt.getTime() >= from.getTime() && x.startsAt.getTime() < to.getTime(),
   );

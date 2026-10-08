@@ -14,9 +14,15 @@ export type EnsureSessionsResult = { inserted: number; updated: number; removed:
 /**
  * Ensure the `sessions` rows for one service between two local dates (inclusive).
  * - inserts missing occurrences
- * - updates capacity/room/length of unpinned rows that drifted from the rules
- * - deletes unpinned rows no longer produced by the rules, unless they carry
- *   bookings or holds, in which case they are pinned (kept as manual)
+ * - updates capacity/room/length of unpinned rows that drifted from the rules; a
+ *   row that would change room while it carries live bookings (pending, confirmed,
+ *   no-show) or active holds is pinned where it is instead, so the places already
+ *   sold stay in the room the customers were told about
+ * - deletes unpinned rows no longer produced by the rules only when nothing
+ *   references them. `holds.session_id` and `bookings.session_id` are foreign keys
+ *   without cascade, so a row with ANY referencing booking or hold (even a
+ *   cancelled booking or an expired hold) is pinned as manual instead: scheduled
+ *   when it still has live bookings or active holds, otherwise cancelled
  */
 export async function ensureSessions(
   db: DbOrTx,
@@ -44,6 +50,10 @@ export async function ensureSessions(
     .where(and(eq(s.sessions.serviceId, service.id), gte(s.sessions.startsAt, windowStart), lt(s.sessions.startsAt, windowEnd)));
   const existingByKey = new Map(existing.map((row) => [occurrenceKey(row.serviceId, row.startsAt), row]));
 
+  // Sessions in the window that customers are using right now (live bookings or active holds); loaded only when needed.
+  let busyCache: Set<string> | null = null;
+  const busy = async (): Promise<Set<string>> => (busyCache ??= await liveSessionIds(db, existing.map((r) => r.id)));
+
   const toInsert: (typeof s.sessions.$inferInsert)[] = [];
   for (const occ of wanted) {
     const key = occurrenceKey(occ.serviceId, occ.startsAt);
@@ -60,6 +70,12 @@ export async function ensureSessions(
       row.endsAt.getTime() !== occ.endsAt.getTime() ||
       row.status !== "scheduled" ||
       row.source !== occ.source;
+    if (drift && row.roomId !== occ.roomId && (await busy()).has(row.id)) {
+      // Moving would strand the places already sold in the old room: keep it as it is.
+      await db.update(s.sessions).set({ pinned: true, updatedAt: new Date() }).where(eq(s.sessions.id, row.id));
+      result.updated++;
+      continue;
+    }
     if (drift) {
       await db
         .update(s.sessions)
@@ -78,28 +94,46 @@ export async function ensureSessions(
   if (leftovers.length) {
     const ids = leftovers.map((r) => r.id);
     const [bookedIds, heldIds] = await Promise.all([
-      db
-        .select({ id: s.bookings.sessionId })
-        .from(s.bookings)
-        .where(and(inArray(s.bookings.sessionId, ids), inArray(s.bookings.status, ["pending", "confirmed"]))),
-      db
-        .select({ id: s.holds.sessionId })
-        .from(s.holds)
-        .where(and(inArray(s.holds.sessionId, ids), eq(s.holds.status, "active"))),
+      db.select({ id: s.bookings.sessionId }).from(s.bookings).where(inArray(s.bookings.sessionId, ids)),
+      db.select({ id: s.holds.sessionId }).from(s.holds).where(inArray(s.holds.sessionId, ids)),
     ]);
-    const keep = new Set([...bookedIds, ...heldIds].map((r) => r.id).filter((x): x is string => Boolean(x)));
-    const removable = ids.filter((id) => !keep.has(id));
-    const pinnable = ids.filter((id) => keep.has(id));
+    const referenced = new Set([...bookedIds, ...heldIds].map((r) => r.id).filter((x): x is string => Boolean(x)));
+    const live = referenced.size ? await busy() : new Set<string>();
+    const removable = ids.filter((id) => !referenced.has(id));
+    const keepScheduled = ids.filter((id) => referenced.has(id) && live.has(id));
+    const keepCancelled = ids.filter((id) => referenced.has(id) && !live.has(id));
     if (removable.length) {
       await db.delete(s.sessions).where(inArray(s.sessions.id, removable));
       result.removed += removable.length;
     }
-    if (pinnable.length) {
-      await db.update(s.sessions).set({ pinned: true, source: "manual", updatedAt: new Date() }).where(inArray(s.sessions.id, pinnable));
+    if (keepScheduled.length) {
+      await db.update(s.sessions).set({ pinned: true, source: "manual", updatedAt: new Date() }).where(inArray(s.sessions.id, keepScheduled));
+    }
+    if (keepCancelled.length) {
+      await db
+        .update(s.sessions)
+        .set({ pinned: true, source: "manual", status: "cancelled", updatedAt: new Date() })
+        .where(inArray(s.sessions.id, keepCancelled));
     }
   }
 
   return result;
+}
+
+/** The ids (of those given) with live bookings (pending, confirmed, no-show) or active holds. */
+async function liveSessionIds(db: DbOrTx, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const [booked, held] = await Promise.all([
+    db
+      .select({ id: s.bookings.sessionId })
+      .from(s.bookings)
+      .where(and(inArray(s.bookings.sessionId, ids), inArray(s.bookings.status, ["pending", "confirmed", "no_show"]))),
+    db
+      .select({ id: s.holds.sessionId })
+      .from(s.holds)
+      .where(and(inArray(s.holds.sessionId, ids), eq(s.holds.status, "active"))),
+  ]);
+  return new Set([...booked, ...held].map((r) => r.id).filter((x): x is string => Boolean(x)));
 }
 
 /** Ensure sessions for every session-kind service at a venue in the window. */

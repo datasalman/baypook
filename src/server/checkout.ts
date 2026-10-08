@@ -12,7 +12,7 @@ import { DEFAULT_TZ } from "@/core/time";
 import { env, isDemo } from "@/lib/env";
 import { getPaymentProvider } from "@/providers";
 import type { CheckoutLineItem } from "@/providers/types";
-import { getActiveHold, releaseHold, setHoldCheckout } from "./holds";
+import { getActiveHold, lockActiveHold, releaseHold, setHoldCheckout } from "./holds";
 import { getService } from "./catalogue";
 import { quoteForService } from "./quote";
 import { getOrganisation } from "./org";
@@ -175,10 +175,19 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
   };
 
   if (payInStore) {
-    const booking = await db.transaction(async (tx) => {
-      await supersedePreviousBooking(tx, hold);
-      return createPendingBookingFromHold(tx, { ...common, paymentMethod: "pay_in_store" });
+    const { booking, previousCheckoutId } = await db.transaction(async (tx) => {
+      // Re-read and lock the hold: a concurrent checkout on it waits here and then sees our booking.
+      const locked = await lockActiveHold(tx, hold.id, now);
+      const prev = await supersedePreviousBooking(tx, locked);
+      const b = await createPendingBookingFromHold(tx, { ...common, hold: locked, paymentMethod: "pay_in_store" });
+      return { booking: b, previousCheckoutId: prev };
     });
+    if (previousCheckoutId) {
+      await safely("expire previous checkout", async () => {
+        const resolved = await getPaymentProvider(venue.slug);
+        if (resolved) await resolved.provider.expireCheckout(previousCheckoutId);
+      });
+    }
     await safely("confirmation email", () => sendBookingEmail(db, { bookingId: booking.id, template: "confirmation", dedupe: true }));
     if (service.kind === "slot") {
       await safely("owner party alert", () => sendBookingEmail(db, { bookingId: booking.id, template: "owner_new_party", dedupe: true }));
@@ -195,10 +204,13 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
   }
   const provider = resolved.provider;
 
-  const { booking, previousCheckoutId } = await db.transaction(async (tx) => {
-    const prev = await supersedePreviousBooking(tx, hold);
-    const b = await createPendingBookingFromHold(tx, { ...common, paymentMethod: "online_card" });
-    return { booking: b, previousCheckoutId: prev };
+  const { booking, previousCheckoutId, lockedHold } = await db.transaction(async (tx) => {
+    // Re-read and lock the hold: a concurrent checkout on it waits here and then
+    // supersedes the booking this one creates, so only one pending booking survives.
+    const locked = await lockActiveHold(tx, hold.id, now);
+    const prev = await supersedePreviousBooking(tx, locked);
+    const b = await createPendingBookingFromHold(tx, { ...common, hold: locked, paymentMethod: "online_card" });
+    return { booking: b, previousCheckoutId: prev, lockedHold: locked };
   });
   if (previousCheckoutId) await safely("expire previous checkout", () => provider.expireCheckout(previousCheckoutId));
 
@@ -223,7 +235,7 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
       lineItems,
       successUrl: urls.successUrl,
       cancelUrl: urls.cancelUrl,
-      expiresAt: hold.expiresAt,
+      expiresAt: lockedHold.expiresAt,
       metadata: { bookingId: booking.id, bookingReference: booking.reference },
     });
   } catch (e) {
@@ -258,6 +270,7 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
  * places are not counted twice, and its checkout is returned to be expired.
  */
 async function supersedePreviousBooking(tx: DbOrTx, hold: s.Hold): Promise<string | null> {
+  // `hold` must be the row locked by `lockActiveHold` in this transaction.
   if (!hold.bookingId) return null;
   const [prev] = await tx
     .select()

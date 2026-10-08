@@ -22,9 +22,11 @@
  * - `birthday_child`: "Zara" or "Zara, 7" (parties only).
  *
  * Each row becomes a confirmed booking (source `import`, payment method `imported`,
- * a payment row from `paid_total`), with notes starting "Wix ref <reference>".
- * No emails are sent; the calendar mirror is updated. Rows whose reference is
- * already on a booking are skipped, so the import can be run again safely.
+ * a payment row from `paid_total`, `externalRef` = the Wix reference), with notes
+ * starting "Wix ref <reference>". No emails are sent; the calendar mirror is
+ * updated. Rows whose reference is already on a booking (`externalRef`, or the
+ * notes of bookings imported before that column existed) are skipped, so the
+ * import can be run again safely.
  * Capacity and room rules apply (a clash fails the row); lead time and cut-off do not.
  */
 import { and, eq, ilike } from "drizzle-orm";
@@ -34,11 +36,9 @@ import { DEFAULT_TZ, isValidDateStr, isValidTimeStr, localDate, zonedDateTime } 
 import type { CurrentUser } from "../src/server/auth";
 import { listServicesForVenue, type ServiceWithCatalogue } from "../src/server/catalogue";
 import { getOrganisation, listVenues } from "../src/server/org";
-import { createManualBooking, derivePaymentStatus } from "../src/server/bookings";
+import { createManualBooking } from "../src/server/bookings";
 import { quoteForService } from "../src/server/quote";
 import { assertBookable } from "../src/server/availability";
-import { audit } from "../src/server/audit";
-import { syncBookingToCalendar } from "../src/server/calendar";
 import { ensureSessions } from "../src/server/sessions";
 
 // ---------- CSV ----------
@@ -402,6 +402,9 @@ async function loadCatalogue(db: DbOrTx): Promise<CatalogueVenue[]> {
 }
 
 async function existingBookingForRef(db: DbOrTx, reference: string): Promise<s.Booking | null> {
+  const [byRef] = await db.select().from(s.bookings).where(eq(s.bookings.externalRef, reference)).limit(1);
+  if (byRef) return byRef;
+  // Bookings imported before `externalRef` existed carry the reference in their notes only.
   const like = `%${wixRefNote(reference).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
   const rows = await db.select().from(s.bookings).where(ilike(s.bookings.notes, like));
   return rows.find((b) => notesHaveWixRef(b.notes, reference)) ?? null;
@@ -471,7 +474,7 @@ export async function importWix(db: DbOrTx, csvText: string, opts: ImportOptions
         continue;
       }
 
-      const created = await createManualBooking(db, {
+      const booking = await createManualBooking(db, {
         user: opts.user,
         venue: plan.venue,
         service: plan.service,
@@ -482,54 +485,12 @@ export async function importWix(db: DbOrTx, csvText: string, opts: ImportOptions
         customer: plan.customer,
         birthdayChild: plan.birthdayChild,
         notes: plan.notes,
-        // Created as owed (no payment row), then turned into an imported, paid booking below.
-        payment: { method: "pay_in_store", amountPence: 0 },
+        payment: { method: "imported", amountPence: plan.paidPence },
+        source: "import",
+        externalRef: row.reference,
         sendEmail: false,
         now,
       });
-
-      const booking = await db.transaction(async (tx) => {
-        const paidPence = plan.paidPence;
-        const [updated] = await tx
-          .update(s.bookings)
-          .set({
-            source: "import",
-            paymentMethod: "imported",
-            paidPence,
-            paymentStatus: derivePaymentStatus({ totalPence: created.totalPence, paidPence, refundedPence: 0, paymentMethod: "imported" }),
-            updatedAt: new Date(),
-          })
-          .where(eq(s.bookings.id, created.id))
-          .returning();
-        if (paidPence > 0) {
-          await tx.insert(s.payments).values({
-            bookingId: created.id,
-            venueId: created.venueId,
-            provider: "import",
-            amountPence: paidPence,
-            currency: org.currency,
-            status: "succeeded",
-            method: "imported",
-            createdBy: opts.user.id,
-          });
-        }
-        await audit(tx, {
-          user: opts.user,
-          action: "booking.import",
-          entityType: "booking",
-          entityId: created.id,
-          venueId: created.venueId,
-          before: { source: created.source, paymentMethod: created.paymentMethod, paidPence: created.paidPence },
-          after: { source: "import", paymentMethod: "imported", paidPence, wixReference: row.reference },
-        });
-        return updated ?? created;
-      });
-      // The mirror was created while the booking still said "to pay in store"; refresh it.
-      try {
-        await syncBookingToCalendar(db, booking.id, "update");
-      } catch {
-        // Never fatal: the calendar is a mirror.
-      }
       out("created", `${plan.service.name}, ${booking.places} ${plan.service.kind === "slot" ? "children" : "places"}.${priceNote}`, {
         bookingReference: booking.reference,
         bookingId: booking.id,

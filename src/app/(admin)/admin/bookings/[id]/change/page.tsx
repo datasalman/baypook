@@ -63,11 +63,18 @@ export default async function ChangeCountsPage({ params }: { params: Promise<{ i
       <ChangeCountsForm
         bookingId={b.id}
         catalogue={catalogue}
-        initialLines={Object.fromEntries(b.lines.map((l) => [l.optionId, l.qty]))}
-        initialAddOns={Object.fromEntries(b.addOns.map((a) => [a.addOnId, a.qty]))}
+        initialLines={sumByKey(b.lines.map((l) => [l.optionId, l.qty]))}
+        initialAddOns={sumByKey(b.addOns.map((a) => [a.addOnId, a.qty]))}
         placesLeft={placesLeft}
         netPaidPence={b.paidPence - b.refundedPence}
       />
     </>
   );
+}
+
+/** One option can appear on several lines when places were sold at different prices; the form edits the total. */
+function sumByKey(pairs: [string, number][]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, q] of pairs) out[k] = (out[k] ?? 0) + q;
+  return out;
 }

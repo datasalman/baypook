@@ -173,7 +173,8 @@ describe("cancel and refund", () => {
     const b = await paidBooking("14:00", 2);
     await refundBooking(c.db, { bookingId: b.id, user: c.manager, amountPence: 1700, reason: "One child could not come" });
     const detail = await getBookingDetail(c.db, b.id);
-    expect(detail!.booking).toMatchObject({ refundedPence: 1700, paymentStatus: "partially_refunded", status: "confirmed" });
+    // The total is unchanged, so after giving 1700 back the booking owes it again (owed comes first).
+    expect(detail!.booking).toMatchObject({ refundedPence: 1700, paymentStatus: "owed", status: "confirmed" });
     expect(detail!.payments[0].status).toBe("partially_refunded");
     await expectCode(refundBooking(c.db, { bookingId: b.id, user: c.owner, amountPence: 1800, reason: "x" }), "LIMIT", 1700);
     await expectCode(refundBooking(c.db, { bookingId: b.id, user: c.owner, amountPence: 0, reason: "x" }), "INVALID");
@@ -344,7 +345,7 @@ describe("Stripe webhooks", () => {
     });
     expect(refunded.bookingId).toBe(bookingId);
     const [b] = await c.db.select().from(s.bookings).where(eq(s.bookings.id, bookingId));
-    expect(b).toMatchObject({ refundedPence: 1700, paymentStatus: "partially_refunded" });
+    expect(b).toMatchObject({ refundedPence: 1700, paymentStatus: "owed" });
     // Seeing the same refund again (another event) adds nothing.
     await handleStripeEvent(c.db, {
       venue: c.venue,

@@ -183,6 +183,7 @@ describe("importWix", () => {
     for (const b of bookings) {
       expect(b).toMatchObject({ status: "confirmed", source: "import", paymentMethod: "imported", paymentStatus: "paid" });
       expect(b.notes).toMatch(/^Wix ref WX-1023\d/);
+      expect(b.externalRef).toMatch(/^WX-1023\d$/);
     }
     const workshop = bookings.find((b) => b.notes?.startsWith("Wix ref WX-10231"))!;
     expect(workshop).toMatchObject({ places: 3, totalPence: 4400, paidPence: 4400 });
@@ -208,6 +209,10 @@ describe("importWix", () => {
     const again = await importWix(db, SAMPLE, { user: owner, now: NOW });
     expect(again.map((o) => o.result)).toEqual(["skipped", "skipped", "skipped"]);
     expect(again[0].message).toMatch(/Already imported as BP-/);
+    // Found by `externalRef` even when the notes no longer carry the reference.
+    await db.update(s.bookings).set({ notes: null });
+    const third = await importWix(db, SAMPLE, { user: owner, now: NOW });
+    expect(third.map((o) => o.result)).toEqual(["skipped", "skipped", "skipped"]);
     expect(await db.select().from(s.bookings)).toHaveLength(3);
   });
 

@@ -75,8 +75,10 @@ function toSessionLike(
 /**
  * Everything that can conflict inside [from, to) at a venue (optionally one room):
  * - sessions (scheduled or cancelled) overlapping the window
- * - pending and confirmed bookings overlapping the window
- * - active, unexpired holds overlapping the window that are not yet attached to a
+ * - pending and confirmed bookings overlapping the window (in the room, or on one of
+ *   the sessions loaded: a session's places are counted by `sessionId`, whatever
+ *   room the booking row says)
+ * - active, unexpired holds overlapping the window (same rule) that are not yet attached to a
  *   booking (once checkout creates the pending booking and sets `holds.bookingId`,
  *   the booking counts the places, so they are never counted twice)
  * - blocks overlapping the window (venue-wide, or the room when one is given)
@@ -96,7 +98,6 @@ export async function loadWindowState(
     lt(s.bookings.startsAt, to),
     gt(s.bookings.endsAt, from),
   ];
-  if (roomId) bookingConds.push(eq(s.bookings.roomId, roomId));
 
   const holdConds: SQL[] = [
     eq(s.holds.venueId, venueId),
@@ -106,7 +107,6 @@ export async function loadWindowState(
     lt(s.holds.startsAt, to),
     gt(s.holds.endsAt, from),
   ];
-  if (roomId) holdConds.push(eq(s.holds.roomId, roomId));
 
   const blockConds: (SQL | undefined)[] = [eq(s.blocks.venueId, venueId), lt(s.blocks.startsAt, to), gt(s.blocks.endsAt, from)];
   if (roomId) blockConds.push(or(isNull(s.blocks.roomId), eq(s.blocks.roomId, roomId)));
@@ -123,6 +123,14 @@ export async function loadWindowState(
     })
     .from(s.sessions)
     .where(and(...sessionConds));
+
+  if (roomId) {
+    const ids = sessionRows.map((r) => r.id);
+    const bookingRoom = ids.length ? or(eq(s.bookings.roomId, roomId), inArray(s.bookings.sessionId, ids)) : undefined;
+    const holdRoom = ids.length ? or(eq(s.holds.roomId, roomId), inArray(s.holds.sessionId, ids)) : undefined;
+    bookingConds.push(bookingRoom ?? eq(s.bookings.roomId, roomId));
+    holdConds.push(holdRoom ?? eq(s.holds.roomId, roomId));
+  }
 
   const bookingRows = await db
     .select({
@@ -179,7 +187,10 @@ export async function getSessionAvailability(
   await ensureSessions(db, service, venue, input.from, input.to, tz);
   const from = startOfLocalDay(input.from, tz);
   const to = endOfLocalDay(input.to, tz);
-  const state = await loadWindowState(db, { venueId: venue.id, roomId: service.roomId, from, to, now });
+  // Venue-wide, not by `service.roomId`: a session pinned in its old room after the
+  // service moved rooms is still this service's session (the rules below check each
+  // session against its own room).
+  const state = await loadWindowState(db, { venueId: venue.id, from, to, now });
   const sessions = state.sessions.filter(
     (x) => x.serviceId === service.id && x.startsAt.getTime() >= from.getTime() && x.startsAt.getTime() < to.getTime(),
   );
