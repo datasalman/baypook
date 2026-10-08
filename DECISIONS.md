@@ -22,4 +22,4 @@ Each entry: what was open, what BayPook does, why. Values that could change are 
 18. **Rooms cannot be deleted** while services, sessions, bookings, holds or blocks reference them, or when they are the venue's last room.
 19. **Reports:** a payment counts on the day it was taken; a refund is subtracted on the day it was given; imported Wix payments are left out of takings; CSV cells starting with `= + - @` are prefixed with an apostrophe to stop spreadsheet formula injection.
 20. **Users:** nobody can change their own role or deactivate themselves; the last active owner cannot be demoted or deactivated; deactivating deletes the user's sessions. Users are never deleted.
-21. **Walk-ins without an email** are stored with a placeholder address `no-email@<venue-slug>.local` and no email is sent.
+21. **Walk-ins without an email** are stored with a blank email (a shared placeholder would merge every email-less walk-in into one customer). No customer email is sent for them on booking, move, cancel or refund; the owner alert and calendar push still happen. The manual-booking wizard can pick an existing customer by id so repeat walk-ins are not duplicated.

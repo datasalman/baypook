@@ -82,6 +82,24 @@ async function sideEffect(what: string, fn: () => Promise<unknown>): Promise<voi
   }
 }
 
+/** Customer-facing emails are skipped (not failed) when the customer has no email address, e.g. a walk-in. */
+async function emailCustomer(
+  db: DbOrTx,
+  what: string,
+  args: Parameters<typeof sendBookingEmail>[1],
+): Promise<void> {
+  await sideEffect(what, async () => {
+    const [row] = await db
+      .select({ email: s.customers.email })
+      .from(s.bookings)
+      .innerJoin(s.customers, eq(s.customers.id, s.bookings.customerId))
+      .where(eq(s.bookings.id, args.bookingId))
+      .limit(1);
+    if (!row || !row.email.trim()) return;
+    await sendBookingEmail(db, args);
+  });
+}
+
 function requireAccess(user: CurrentUser, venueId: string): void {
   if (!canAccessVenue(user, venueId)) throw new BookingError("FORBIDDEN", "You do not have access to this venue.");
 }
@@ -416,7 +434,7 @@ export async function confirmBookingPaid(
 
   if (outcome.newlyConfirmed) {
     const b = outcome.booking;
-    await sideEffect("confirmation email", () => sendBookingEmail(db, { bookingId: b.id, template: "confirmation", dedupe: true }));
+    await emailCustomer(db, "confirmation email", { bookingId: b.id, template: "confirmation", dedupe: true });
     const [svc] = await db.select({ kind: s.services.kind }).from(s.services).where(eq(s.services.id, b.serviceId)).limit(1);
     if (svc?.kind === "slot") {
       await sideEffect("owner party alert", () => sendBookingEmail(db, { bookingId: b.id, template: "owner_new_party", dedupe: true }));
@@ -556,7 +574,7 @@ export async function cancelBooking(
   );
 
   if (current.status !== "pending") {
-    await sideEffect("cancellation email", () => sendBookingEmail(db, { bookingId: booking.id, template: "cancellation" }));
+    await emailCustomer(db, "cancellation email", { bookingId: booking.id, template: "cancellation" });
   }
   await sideEffect("calendar delete", () => syncBookingToCalendar(db, booking.id, "delete"));
   return booking;
@@ -674,9 +692,7 @@ export async function refundBooking(
   });
 
   if (status === "failed") throw new BookingError("UNAVAILABLE", "The card refund was declined by the payment provider.");
-  await sideEffect("refund email", () =>
-    sendBookingEmail(db, { bookingId: booking.id, template: "refund", extra: { refundAmountPence: amount } }),
-  );
+  await emailCustomer(db, "refund email", { bookingId: booking.id, template: "refund", extra: { refundAmountPence: amount } });
   return refund;
 }
 
@@ -735,9 +751,7 @@ export async function recordProviderRefund(
     return { refund: row, booking: after };
   });
   if (result && result.refund.status !== "failed") {
-    await sideEffect("refund email", () =>
-      sendBookingEmail(db, { bookingId: result.booking.id, template: "refund", extra: { refundAmountPence: input.amountPence } }),
-    );
+    await emailCustomer(db, "refund email", { bookingId: result.booking.id, template: "refund", extra: { refundAmountPence: input.amountPence } });
   }
   return result;
 }
@@ -817,7 +831,7 @@ export async function moveBooking(
     }),
   );
 
-  await sideEffect("confirmation email (moved)", () => sendBookingEmail(db, { bookingId: booking.id, template: "confirmation" }));
+  await emailCustomer(db, "confirmation email (moved)", { bookingId: booking.id, template: "confirmation" });
   await sideEffect("calendar update", () => syncBookingToCalendar(db, booking.id, "update"));
   return booking;
 }
@@ -1034,6 +1048,8 @@ export async function createManualBooking(
     lines: { optionId: string; qty: number }[];
     addOns: { addOnId: string; qty: number }[];
     customer: { firstName: string; lastName: string; email?: string | null; phone?: string | null };
+    /** Reuse an existing customer (e.g. picked from the typeahead) instead of matching by email. */
+    customerId?: string | null;
     birthdayChild?: { firstName: string; age?: number | null } | null;
     notes?: string | null;
     payment: { method: "cash" | "card_machine" | "pay_in_store"; amountPence?: number | null };
@@ -1087,13 +1103,23 @@ export async function createManualBooking(
         const [session] = await tx.select({ roomId: s.sessions.roomId }).from(s.sessions).where(eq(s.sessions.id, slot.sessionId)).limit(1);
         if (session) roomId = session.roomId;
       }
-      const customer = await findOrCreateCustomer(tx, {
-        organisationId: org.id,
-        firstName,
-        lastName: input.customer.lastName ?? "",
-        email: input.customer.email ?? "",
-        phone: input.customer.phone ?? null,
-      });
+      let customer: s.Customer | undefined;
+      if (isUuid(input.customerId)) {
+        [customer] = await tx
+          .select()
+          .from(s.customers)
+          .where(and(eq(s.customers.id, input.customerId as string), eq(s.customers.organisationId, org.id)))
+          .limit(1);
+      }
+      if (!customer) {
+        customer = await findOrCreateCustomer(tx, {
+          organisationId: org.id,
+          firstName,
+          lastName: input.customer.lastName ?? "",
+          email: input.customer.email ?? "",
+          phone: input.customer.phone ?? null,
+        });
+      }
       const isSlot = service.kind === "slot";
       const booking = await insertBooking(tx, {
         venueId: venue.id,

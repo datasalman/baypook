@@ -1,0 +1,4 @@
+reference,venue,service,start,first_name,last_name,email,phone,places,places_slime-workshop,places_decoden-craft-workshop,paid_total,birthday_child,add_ons,notes
+WX-10231,south-woodford,Classic Workshops,2026-11-07 14:00,Amina,Khan,amina@example.com,07700 900123,3,2,1,44.00,,,
+WX-10232,South Woodford,Slime Party,2026-11-08 11:00,Ben,Okafor,ben@example.com,07700 900456,12,,,282.00,"Zara, 7",Food time,"One child has a nut allergy, please no snacks"
+WX-10233,lakeside,classic workshops,2026-11-14T10:00:00Z,Chloe,Smith,chloe@example.com,07700 900789,2,,,34,,,
