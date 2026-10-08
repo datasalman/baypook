@@ -9,7 +9,7 @@ Allow about two hours in total, plus waiting for Stripe and DNS checks.
 - A GitHub account with access to `github.com/datasalman/baypook`.
 - Your `slimedom.com` DNS login (where the domain's records are managed).
 - The business bank account details for each venue (for Stripe payouts).
-- A terminal with Node 20 or newer for the one-off database migration (`node --version`).
+- A terminal with Node 22 or newer for the one-off database migration (`node --version`).
 
 Keep a private note of every key you create. Never paste keys into the website code, emails or chats; only into Vercel's environment variables (step 5).
 
@@ -19,36 +19,43 @@ Each venue has its own Stripe account so payouts land in separate bank accounts.
 
 1. Go to https://dashboard.stripe.com and sign in (or create the login once). Create an account named **Slimedom South Woodford**. Complete the business details and add that venue's bank account.
 2. In the top-left account switcher choose **New account** and create **Slimedom Lakeside** the same way.
-3. **Start in test mode.** With the test-mode toggle on, open Developers, API keys, and copy the **Secret key** (`sk_test_…`) for each account.
+3. **Start in a sandbox.** Stripe uses **sandboxes** instead of the old test-mode toggle: open the account picker (top left), choose **Sandboxes** and create one for each venue account. In the sandbox open Developers, API keys (the keys page switches between sandbox and live). Recommended: **Create restricted key** (`rk_test_…`) with **Write** access to **Checkout Sessions** and **Refunds** and nothing else; BayPook accepts a restricted key wherever it asks for the secret key. (The full **Secret key**, `sk_test_…`, also works.)
    - South Woodford → Vercel variable `STRIPE_SECRET_KEY__SOUTH_WOODFORD`
    - Lakeside → `STRIPE_SECRET_KEY__LAKESIDE`
-4. Webhooks (one per account). Developers, Webhooks, **Add endpoint**:
-   - Endpoint URL: `https://book-api.slimedom.com/api/webhooks/stripe/south-woodford` (and `/lakeside` for the Lakeside account).
-   - Events to send: `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `charge.refunded`, `refund.updated`, `charge.refund.updated`, `charge.dispute.created`. (The two refund events tell BayPook when a card refund that was still pending has gone through or failed. Stripe lists them separately, so tick both.)
-   - After saving, reveal the **Signing secret** (`whsec_…`) → `STRIPE_WEBHOOK_SECRET__SOUTH_WOODFORD` / `STRIPE_WEBHOOK_SECRET__LAKESIDE`.
-5. Apple Pay and Google Pay: Settings, Payment methods, make sure **Apple Pay** and **Google Pay** are on. Stripe Checkout shows them automatically on supported devices. Because checkout is hosted by Stripe, no domain verification is needed.
+4. Webhooks (one per account). Open **Workbench**, **Webhooks**, **Create an event destination**, and choose **Your account**:
+   - API version: the one BayPook's Stripe library uses, `2026-09-30.endive`.
+   - Payload format: **Snapshot**. Stripe suggests Thin for new destinations, but BayPook reads the full object in each event, so it must be Snapshot.
+   - Events: `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `payment_intent.succeeded`, `charge.refunded`, `refund.created`, `refund.updated`, `refund.failed`, `charge.dispute.created`. (The `refund.*` events tell BayPook when a card refund that was still pending has gone through or failed. Checkout offers cards only, so the two `async_payment` events should never fire; they are there as a safety net.)
+   - Destination type **Webhook endpoint**, endpoint URL `https://book-api.slimedom.com/api/webhooks/stripe/south-woodford` (and `/lakeside` for the Lakeside account).
+   - After creating it, open the destination and **Reveal** the **Signing secret** (`whsec_…`) → `STRIPE_WEBHOOK_SECRET__SOUTH_WOODFORD` / `STRIPE_WEBHOOK_SECRET__LAKESIDE`.
+5. Apple Pay and Google Pay: Settings, Payment methods, make sure **Apple Pay** and **Google Pay** are on. Stripe Checkout shows them automatically on supported devices (they count as card payments, which is all BayPook offers). Because checkout is hosted by Stripe, no domain verification is needed.
 6. Rehearse with test cards (`4242 4242 4242 4242`, any future date, any CVC) on the live site. Check the booking confirms in the admin and the email arrives.
-7. **Go live:** switch the toggle off (live mode), repeat steps 3 and 4 with the live keys and a live webhook endpoint, and replace the four variables in Vercel. Redeploy.
+7. **Go live:** switch the keys page to live, repeat steps 3 and 4 with live keys (a live restricted key `rk_live_…` with the same two permissions) and a live event destination, and replace the four variables in Vercel. Redeploy.
 
-Fees: 1.5% + 20p per standard UK card. No monthly fee. Disputes cost £20 and show up in the admin.
+Fees: 1.5% + 20p per standard UK card. No monthly fee. Stripe charges dispute fees (see Stripe pricing); disputes show up in the admin.
 
 ## 2. Resend: email from @slimedom.com
 
 1. Create an account at https://resend.com (free tier: 3,000 emails a month, 100 a day; upgrade to Pro if a busy Saturday hits the daily cap).
-2. Domains, **Add domain**: `slimedom.com`, region EU (Ireland). Resend shows DNS records: one or more `TXT` (SPF and DKIM) and an `MX` for bounces.
-3. Add those records at your DNS provider exactly as shown. If Google Workspace already owns the root SPF record, Resend's records use a subdomain (`send.slimedom.com`), so nothing clashes. Add a DMARC record if you do not have one: `_dmarc.slimedom.com TXT "v=DMARC1; p=quarantine; rua=mailto:hello@slimedom.com"`.
-4. Click **Verify** in Resend and wait until every record is green (minutes to an hour).
-5. API keys, **Create API key** (Sending access only) → `RESEND_API_KEY`.
-6. Set `EMAIL_FROM` to `Slimedom <bookings@slimedom.com>` and, optionally, `OWNER_ALERT_EMAIL` to the inbox that should get new-party alerts (defaults to the organisation contact email in Settings).
+2. Domains, **Add domain**. Resend recommends a sending subdomain so booking email has its own reputation, separate from your everyday mail: use `book.slimedom.com`, region EU (Ireland). Resend shows DNS records: `TXT` records (SPF and DKIM) plus an `MX` or `CNAME` record.
+3. Add those records at your DNS provider exactly as shown. Because they sit on the subdomain, they do not clash with Google Workspace's records on `slimedom.com`. Add a DMARC record if you do not have one, and tighten it in stages: start with `_dmarc.slimedom.com TXT "v=DMARC1; p=none; rua=mailto:hello@slimedom.com"`, move to `p=quarantine` once the reports show only your own services sending, then to `p=reject`.
+4. Verification is automatic once the records are in: usually within 15 minutes, but it can take up to 72 hours. If it stalls after you have fixed a record, click **Restart verification**.
+5. API keys, **Create API key** with **Sending access**, restricted to the `book.slimedom.com` domain → `RESEND_API_KEY`.
+6. Set `EMAIL_FROM` to `Slimedom <bookings@book.slimedom.com>` and, optionally, `OWNER_ALERT_EMAIL` to the inbox that should get new-party alerts (defaults to the organisation contact email in Settings).
 
 ## 3. Google Calendar: the mirror
 
-1. In Google Calendar (the Workspace account), create one calendar per venue, e.g. **Slimedom South Woodford** and **Slimedom Lakeside**. Share them with every staff member who should see bookings on their phone.
+1. In Google Calendar, create one calendar per venue, e.g. **Slimedom South Woodford** and **Slimedom Lakeside**, from a long-lived Workspace account (a shared business account, not one person's): from October 2026 Google deletes secondary calendars together with their owner's account. Share them with every staff member who should see bookings on their phone.
 2. Go to https://console.cloud.google.com, create a project **BayPook**, enable the **Google Calendar API** (APIs and services, Library).
 3. IAM and admin, Service accounts, **Create service account** (name `baypook-calendar`). Open it, Keys, **Add key**, JSON. A file downloads. Keep it private.
-4. Share each venue calendar with the service account's email address (it looks like `baypook-calendar@baypook-xxxx.iam.gserviceaccount.com`) with permission **Make changes to events**.
+4. Share each venue calendar with the service account's email address (it looks like `baypook-calendar@baypook-xxxx.iam.gserviceaccount.com`) with permission **Make changes and see event details**.
 5. Open each calendar's settings and copy its **Calendar ID** (ends in `@group.calendar.google.com`). In the BayPook admin: Settings, Venues, paste it into **Google Calendar ID** for that venue.
 6. Put the whole JSON key file's contents on one line into `GOOGLE_SERVICE_ACCOUNT_JSON`. If Vercel's editor mangles newlines, base64-encode the file instead and set `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`.
+
+Troubleshooting:
+- **The sharing permission is greyed out or the service account cannot be added.** Workspace must allow external sharing of secondary calendars with change rights: Admin console, Apps, Google Workspace, Calendar, General settings, external sharing options for secondary calendars, set to allow making changes. The change can take a while to apply.
+- **"Key creation is disabled" in step 3.** Newer Google Cloud organisations block service-account keys by default with the `iam.disableServiceAccountKeyCreation` policy. An organisation administrator can exempt the BayPook project (IAM and admin, Organisation policies, that policy, override for the project), then create the key.
+- **Events stop appearing after someone leaves.** If the calendar's owner account was deleted, the calendar went with it: recreate it from a long-lived account, share it again (step 4) and paste the new ID in Settings.
 
 ## 4. Database: Neon (or Supabase)
 
@@ -63,7 +70,7 @@ Fees: 1.5% + 20p per standard UK card. No monthly fee. Disputes cost £20 and sh
 
 ## 5. Vercel: hosting, env vars, cron, domains
 
-1. Import `github.com/datasalman/baypook` at https://vercel.com/new. Framework: Next.js. Root directory: `/`.
+1. Plan first: BayPook is a commercial app, and its cron jobs run more often than once a day, which the Hobby plan rejects, so the project must sit on a **Pro** team (US$20 a seat) before the first deploy. If the website already has a Pro seat, add this project to the same team at no extra cost. Then import `github.com/datasalman/baypook` at https://vercel.com/new into that team. Framework: Next.js. Root directory: `/`.
 2. Build command: `npm run db:migrate && npm run build`. Install command: `npm ci`.
 3. Environment variables (Production, and Preview if you want a staging copy with a second database):
    - `BAYPOOK_MODE=live`
@@ -74,10 +81,9 @@ Fees: 1.5% + 20p per standard UK card. No monthly fee. Disputes cost £20 and sh
    - `ALLOWED_ORIGINS=https://slimedom.com,https://www.slimedom.com`
    - `CRON_SECRET` (`openssl rand -hex 24`)
    - The Stripe (step 1), Resend (step 2) and Google (step 3) variables
-4. Deploy. The `vercel.json` in the repo registers the cron jobs (hold expiry every 5 minutes, reminders hourly, retention daily). Vercel signs them with `CRON_SECRET`.
+4. Deploy. The `vercel.json` in the repo registers the cron jobs (hold expiry every 5 minutes, reminders hourly, retention daily). Vercel sends it as `Authorization: Bearer <CRON_SECRET>` with each cron call.
 5. Domains: Settings, Domains, add `book-api.slimedom.com` and `admin.slimedom.com`. Vercel shows a `CNAME` for each (`cname.vercel-dns.com`); add them at your DNS provider. Both names serve the same deployment; the API lives under `/api/v1`, the admin under `/admin`.
 6. Rate limiting (recommended): Settings, Firewall, add a rate-limit rule for paths starting `/api/v1/holds` and `/api/v1/checkout` (for example 30 requests a minute per IP). BayPook has its own light limit, but Vercel's runs before the function and is shared across instances.
-7. Plan: BayPook is a commercial app, so the project must sit on a **Pro** team (US$20 a seat). If the website already has a Pro seat, add this project to the same team at no extra cost.
 
 ## 6. First owner login
 
@@ -96,8 +102,8 @@ Follow `INTEGRATION.md`. In short: set `bookingApi: "https://book-api.slimedom.c
 
 ## Checklist
 
-- [ ] Stripe South Woodford: test keys, webhook, then live keys
-- [ ] Stripe Lakeside: test keys, webhook, then live keys
+- [ ] Stripe South Woodford: sandbox keys, event destination (Snapshot), then live keys
+- [ ] Stripe Lakeside: sandbox keys, event destination (Snapshot), then live keys
 - [ ] Resend domain verified, API key, `EMAIL_FROM`
 - [ ] Google service account JSON, calendars shared, IDs pasted in Settings
 - [ ] Neon database, `DATABASE_URL`, migration applied

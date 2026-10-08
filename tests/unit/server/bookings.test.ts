@@ -379,37 +379,44 @@ describe("Stripe webhooks", () => {
     expect(refund.status).toBe("pending");
     expect(await refundEmails(bookingId)).toHaveLength(0);
 
-    // Still pending: nothing yet.
-    const event = (id: string, status: string): WebhookEvent =>
-      ({
-        id,
-        type: "charge.refunded",
-        data: { object: { id: "ch_p", payment_intent: "pi_test_123", refunds: { data: [{ id: "re_pending", amount: 1700, status }] } } },
-      }) as unknown as WebhookEvent;
-    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p2", "pending") });
+    // Snapshot charge.refunded events carry no refunds list: the handler asks Stripe.
+    let stripeStatus = "pending";
+    const listRefunds = async (charge: string) => [{ id: "re_pending", amount: 1700, status: stripeStatus, charge, payment_intent: "pi_test_123" }];
+    const event = (id: string): WebhookEvent => ({
+      id,
+      type: "charge.refunded",
+      data: { object: { id: "ch_p", payment_intent: "pi_test_123", amount_refunded: 1700 } },
+    });
+    // Still pending at Stripe: nothing yet, even though the charge shows the amount refunded.
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p2"), listRefunds });
     expect(await refundEmails(bookingId)).toHaveLength(0);
+    const [stillPending] = await c.db.select().from(s.refunds).where(eq(s.refunds.bookingId, bookingId));
+    expect(stillPending.status).toBe("pending");
 
-    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p3", "succeeded") });
+    stripeStatus = "succeeded";
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p3"), listRefunds });
     const emails = await refundEmails(bookingId);
     expect(emails).toHaveLength(1);
     expect(emails[0].bodyText).toContain("We've refunded £17.00 to the card you paid with.");
-    // A repeat of the event sends nothing more.
-    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p4", "succeeded") });
+    // A repeat, or the refund.updated for the same refund, sends nothing more.
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p4"), listRefunds });
+    await handleStripeEvent(c.db, {
+      venue: c.venue,
+      event: { id: "evt_p5", type: "refund.updated", data: { object: { id: "re_pending", amount: 1700, status: "succeeded", charge: "ch_p" } } },
+      listRefunds,
+    });
     expect(await refundEmails(bookingId)).toHaveLength(1);
+    expect(await c.db.select().from(s.refunds).where(eq(s.refunds.bookingId, bookingId))).toHaveLength(1);
   });
 
   it("syncs a refund made in Stripe and flags a dispute", async () => {
     const bookingId = await pendingBooking("14:00", 2);
     await handleStripeEvent(c.db, { venue: c.venue, event: completed("evt_a", bookingId) });
+    const listRefunds = async (charge: string) => [{ id: "re_1", amount: 1700, status: "succeeded", charge, payment_intent: "pi_test_123" }];
     const refunded = await handleStripeEvent(c.db, {
       venue: c.venue,
-      event: {
-        id: "evt_b",
-        type: "charge.refunded",
-        data: {
-          object: { id: "ch_9", payment_intent: "pi_test_123", amount_refunded: 1700, refunds: { data: [{ id: "re_1", amount: 1700, status: "succeeded" }] } },
-        },
-      },
+      event: { id: "evt_b", type: "charge.refunded", data: { object: { id: "ch_9", payment_intent: "pi_test_123", amount_refunded: 1700 } } },
+      listRefunds,
     });
     expect(refunded.bookingId).toBe(bookingId);
     const [b] = await c.db.select().from(s.bookings).where(eq(s.bookings.id, bookingId));
@@ -417,14 +424,12 @@ describe("Stripe webhooks", () => {
     // Seeing the same refund again (another event) adds nothing.
     await handleStripeEvent(c.db, {
       venue: c.venue,
-      event: {
-        id: "evt_c",
-        type: "charge.refunded",
-        data: { object: { id: "ch_9", payment_intent: "pi_test_123", refunds: { data: [{ id: "re_1", amount: 1700, status: "succeeded" }] } } },
-      },
+      event: { id: "evt_c", type: "refund.updated", data: { object: { id: "re_1", amount: 1700, status: "succeeded", charge: "ch_9" } } },
+      listRefunds,
     });
     const refunds = await c.db.select().from(s.refunds).where(eq(s.refunds.bookingId, bookingId));
     expect(refunds).toHaveLength(1);
+    expect(refunds[0].providerRefundId).toBe("re_1");
     const emails = await refundEmails(bookingId);
     expect(emails).toHaveLength(1);
     expect(emails[0].bodyText).toContain("to the card you paid with");

@@ -1,7 +1,8 @@
 /**
  * Stripe webhook, one endpoint per venue (each venue has its own Stripe account
  * and webhook secret). Verifies the signature against the raw body, then hands
- * the event to `handleStripeEvent`, which is idempotent.
+ * the event to `handleStripeEvent`, which is idempotent. The endpoint must send
+ * snapshot events (SETUP.md step 1.4).
  */
 import { getDb } from "@/db";
 import { env, isDemo } from "@/lib/env";
@@ -46,7 +47,8 @@ export async function POST(req: Request, ctx: Ctx): Promise<Response> {
   }
 
   try {
-    const result = await handleStripeEvent(db, { venue, event });
+    // Events never carry a charge's full refunds list: the handler reads it from Stripe.
+    const result = await handleStripeEvent(db, { venue, event, listRefunds: (chargeId) => stripe.listRefunds(chargeId) });
     console.info(`[webhook:${slug}] ${event.id} ${event.type}`, JSON.stringify(result));
     return json({ received: true, ...result });
   } catch (e) {

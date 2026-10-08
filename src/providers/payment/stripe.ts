@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import type { CreateCheckoutInput, CreateCheckoutResult, PaymentProvider, RefundInput, RefundResult } from "../types";
 
-/** Stripe Checkout (hosted). One instance per venue, each with that venue's secret key. */
+/** Stripe Checkout (hosted). One instance per venue, each with that venue's secret (or restricted) key. */
 export class StripePaymentProvider implements PaymentProvider {
   readonly name = "stripe" as const;
   readonly stripe: Stripe;
@@ -18,6 +18,11 @@ export class StripePaymentProvider implements PaymentProvider {
     const session = await this.stripe.checkout.sessions.create(
       {
         mode: "payment",
+        // Immediate card payments only (Apple Pay and Google Pay are card
+        // wallets), so a delayed method such as Bacs Direct Debit or Pay by Bank
+        // never outlives the hold (DECISIONS 33). API version 2026-09-30.endive
+        // replaced `payment_method_types` on Checkout Sessions with this filter.
+        allowed_payment_method_types: ["card"],
         customer_email: input.customerEmail,
         client_reference_id: input.bookingReference,
         line_items: input.lineItems.map((li) => ({
@@ -58,11 +63,27 @@ export class StripePaymentProvider implements PaymentProvider {
     return { providerRefundId: refund.id, status };
   }
 
+  /**
+   * Every refund on a charge, newest first. Webhook events never include the
+   * charge's expanded refunds list, so the webhook reconciles from this.
+   * 100 is Stripe's page maximum and far more refunds than one booking has.
+   */
+  async listRefunds(chargeId: string): Promise<Stripe.Refund[]> {
+    const page = await this.stripe.refunds.list({ charge: chargeId, limit: 100 });
+    return page.data;
+  }
+
+  /**
+   * Best-effort: Stripe answers an invalid request when the session is already
+   * expired or complete, which is fine. Anything else (network, auth, rate
+   * limit) is thrown; callers log it and carry on.
+   */
   async expireCheckout(checkoutId: string): Promise<void> {
     try {
       await this.stripe.checkout.sessions.expire(checkoutId);
-    } catch {
-      // already expired or completed; nothing to do
+    } catch (e) {
+      if (e instanceof Stripe.errors.StripeInvalidRequestError) return;
+      throw e;
     }
   }
 

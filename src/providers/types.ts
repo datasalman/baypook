@@ -71,6 +71,8 @@ export type EmailMessage = {
   text: string;
   replyTo?: string;
   attachments?: EmailAttachment[];
+  /** Stable id for this message (the notification row id) so a retried send is not delivered twice. */
+  idempotencyKey?: string;
 };
 
 export type EmailProviderName = "resend" | "demo";

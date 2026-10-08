@@ -342,6 +342,7 @@ async function queueAndSend(db: DbOrTx, email: QueuedEmail): Promise<s.Notificat
       text: email.text,
       replyTo: email.replyTo,
       attachments: email.attachments,
+      idempotencyKey: `notification_${row.id}`,
     });
     update = {
       status: result.status,

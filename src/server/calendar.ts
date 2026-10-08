@@ -72,6 +72,8 @@ async function writeLog(db: DbOrTx, row: typeof s.calendarLog.$inferInsert): Pro
 /**
  * Push one booking to its venue calendar.
  *  - create: updates instead when the booking already has an event id; stores the new id
+ *    (Google event ids are derived from the booking id, so a repeated create
+ *    updates the same event instead of adding a second one)
  *  - update: creates when there is no event id yet
  *  - delete: no-op when there is no event id; clears the id afterwards
  * Returns the `calendar_log` row written, or null when the booking does not exist.
@@ -152,7 +154,9 @@ export async function syncBookingToCalendar(
       try {
         await provider.updateEvent(existingId, input);
       } catch (e) {
-        // The event was removed by hand in the calendar: create it again.
+        // The event is gone for good (one deleted by hand but still kept by Google
+        // comes back through the provider's update): create it again. Best-effort:
+        // the Google id is derived from the booking id and may still be taken.
         if (!/\b(404|410)\b/.test(errorMessage(e))) throw e;
         performed = "create";
         eventId = (await provider.createEvent(input)).eventId;
