@@ -3,7 +3,7 @@
  * records every email in `notifications` (which doubles as the Outbox) and hands
  * it to the email provider. Provider failures never throw; they are recorded.
  */
-import { and, asc, desc, eq, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { DEFAULT_TEMPLATES, type TemplateKey } from "@/providers/email/defaults";
@@ -193,7 +193,25 @@ export async function getTemplate(db: DbOrTx, organisationId: string, key: Templ
   return { subject: def.subject, body: def.body };
 }
 
-function icsFor(ctx: BookingEmailContext, vars: Record<string, string>, method: "PUBLISH" | "CANCEL"): EmailAttachment {
+/**
+ * iCalendar SEQUENCE: how many confirmation/cancellation emails this booking has
+ * already had, so a moved booking updates the event already in the calendar.
+ */
+async function icsSequence(db: DbOrTx, bookingId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(s.notifications)
+    .where(
+      and(
+        eq(s.notifications.bookingId, bookingId),
+        inArray(s.notifications.template, ["confirmation", "cancellation"]),
+        inArray(s.notifications.status, ["sent", "demo"]),
+      ),
+    );
+  return Number(row?.n ?? 0);
+}
+
+function icsFor(ctx: BookingEmailContext, vars: Record<string, string>, method: "PUBLISH" | "CANCEL", sequence: number): EmailAttachment {
   const { booking, venue, organisation: org, service } = ctx;
   const description = [
     `Reference ${booking.reference}`,
@@ -215,7 +233,7 @@ function icsFor(ctx: BookingEmailContext, vars: Record<string, string>, method: 
     organiserName: org.name,
     organiserEmail: org.contactEmail,
     url: venue.mapsUrl ?? org.websiteUrl ?? undefined,
-    sequence: method === "CANCEL" ? 1 : 0,
+    sequence,
     method,
   });
   return {
@@ -246,8 +264,12 @@ async function renderFromContext(
   const html = wrapHtml(r.html, brandFor(org), { title: r.subject });
 
   const attachments: EmailAttachment[] = [];
-  if (key === "confirmation" || key === "reminder") attachments.push(icsFor(ctx, vars, "PUBLISH"));
-  if (key === "cancellation") attachments.push(icsFor(ctx, vars, "CANCEL"));
+  if (key === "confirmation" || key === "reminder" || key === "cancellation") {
+    const prior = await icsSequence(db, booking.id);
+    if (key === "confirmation") attachments.push(icsFor(ctx, vars, "PUBLISH", prior));
+    if (key === "reminder") attachments.push(icsFor(ctx, vars, "PUBLISH", Math.max(0, prior - 1)));
+    if (key === "cancellation") attachments.push(icsFor(ctx, vars, "CANCEL", prior));
+  }
 
   const to = key === "owner_new_party" ? (env.ownerAlertEmail() ?? org.contactEmail) : customer.email;
   return { to, subject: r.subject, html, text: r.text, attachments, venueId: booking.venueId, bookingId: booking.id };
