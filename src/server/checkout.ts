@@ -12,7 +12,7 @@ import { DEFAULT_TZ } from "@/core/time";
 import { env, isDemo } from "@/lib/env";
 import { getPaymentProvider } from "@/providers";
 import type { CheckoutLineItem } from "@/providers/types";
-import { getActiveHold, lockActiveHold, releaseHold, setHoldCheckout } from "./holds";
+import { getActiveHold, HoldError, lockActiveHold, releaseHold, setHoldCheckout } from "./holds";
 import { getService } from "./catalogue";
 import { quoteForService } from "./quote";
 import { getOrganisation } from "./org";
@@ -151,6 +151,14 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
   if (venue.status === "closed") throw new BookingError("UNAVAILABLE", "This venue is not taking bookings online right now.");
   const organisation = await getOrganisation(db);
   const tz = organisation.timezone || DEFAULT_TZ;
+  if (hold.sessionId) {
+    // The owner cancelled this time after the places were held (a hold alone does not keep a session running).
+    const [session] = await db.select({ status: s.sessions.status }).from(s.sessions).where(eq(s.sessions.id, hold.sessionId)).limit(1);
+    if (!session || session.status !== "scheduled") {
+      await releaseHold(db, hold.id);
+      throw new BookingError("GONE", "Sorry, that time has just been cancelled. Please choose another time.");
+    }
+  }
 
   let q;
   try {
@@ -240,11 +248,24 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
     });
   } catch (e) {
     console.error("[checkout] createCheckout failed:", e instanceof Error ? e.message : e);
-    await cancelPendingBooking(db, { bookingId: booking.id, reason: "abandoned" });
-    throw new BookingError("UNAVAILABLE", "We could not open the payment page. Please try again in a moment.");
+    // The places stay held (the hold is detached from the cancelled booking) so "try again" works.
+    await cancelPendingBooking(db, { bookingId: booking.id, reason: "abandoned", keepHold: true });
+    throw new BookingError(
+      "UNAVAILABLE",
+      "We could not open the payment page. Your places are still held for a few minutes, so please try again.",
+    );
   }
 
-  await db.transaction(async (tx) => {
+  // The payment page is recorded only if this booking still owns the hold: pressing
+  // Pay again (or the hold running out) while the page was being created has already
+  // cancelled this booking, and its page must not stay payable.
+  const attached = await db.transaction(async (tx) => {
+    // Lock order as in the expiry job and `supersedePreviousBooking`: the hold, then the booking.
+    const [current] = await tx.select().from(s.holds).where(eq(s.holds.id, hold.id)).for("update");
+    const [mine] = await tx.select({ status: s.bookings.status }).from(s.bookings).where(eq(s.bookings.id, booking.id)).for("update");
+    if (!current || current.bookingId !== booking.id || mine?.status !== "pending") {
+      return { ok: false as const, expired: !current || current.status !== "active" || current.expiresAt.getTime() <= now.getTime() };
+    }
     await tx.insert(s.payments).values({
       bookingId: booking.id,
       venueId: venue.id,
@@ -259,7 +280,15 @@ export async function startCheckout(db: Db, input: StartCheckoutInput): Promise<
     if (checkout.provider === "demo" && isDemo()) {
       await saveDemoReturnUrls(tx, booking.id, { successUrl: urls.successUrl, cancelUrl: urls.cancelUrl });
     }
+    return { ok: true as const, expired: false };
   });
+  if (!attached.ok) {
+    await safely("expire superseded checkout", () => provider.expireCheckout(checkout.checkoutId));
+    if (attached.expired) {
+      throw new HoldError("HOLD_EXPIRED", "Your places were held for a short time and that time has run out. Please choose a time again.");
+    }
+    throw new BookingError("STATE", "You pressed Pay again, so this payment page was closed. Please use the one that opened last.");
+  }
 
   return { bookingId: booking.id, reference: booking.reference, checkoutUrl: checkout.url };
 }

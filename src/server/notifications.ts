@@ -97,20 +97,26 @@ export function formatWhatBooked(booking: Pick<s.Booking, "lines" | "addOns">): 
   return out.join("\n");
 }
 
-export function paymentLineFor(booking: Pick<s.Booking, "paymentMethod" | "paymentStatus">): string {
+/**
+ * How the booking is paid, shown before the total ("Paid online: £34.00"). What is
+ * still owed is `total - paid` (DECISIONS.md 29; refunds do not count), so a
+ * booking whose places went up after paying says how much is left to pay in store.
+ */
+export function paymentLineFor(booking: Pick<s.Booking, "paymentMethod" | "paymentStatus" | "totalPence" | "paidPence">): string {
+  const owed = Math.max(0, booking.totalPence - booking.paidPence);
+  const paidSome = booking.paidPence > 0;
   switch (booking.paymentMethod) {
     case "online_card":
-      return "Paid online";
+      return owed > 0 && paidSome ? `Paid online, ${fmtPence(owed)} to pay in store` : "Paid online";
     case "imported":
       return "Imported";
     case "card_machine":
     case "cash":
     case "pay_in_store":
-      return booking.paymentStatus === "paid" || booking.paymentStatus === "partially_refunded" || booking.paymentStatus === "refunded"
-        ? "Paid in store"
-        : "To pay in store";
+      if (owed <= 0) return "Paid in store";
+      return paidSome ? `Part paid, ${fmtPence(owed)} to pay in store` : "To pay in store";
     default:
-      return booking.paymentStatus === "paid" ? "Paid" : "To pay in store";
+      return owed <= 0 ? "Paid" : "To pay in store";
   }
 }
 

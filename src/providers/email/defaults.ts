@@ -28,7 +28,7 @@ export const PLACEHOLDERS: { key: string; meaning: string }[] = [
   { key: "refundAmount", meaning: "Amount refunded, e.g. £17.00" },
   { key: "refundToCard", meaning: "Set when the refund goes back to the card paid with online (use with #if)" },
   { key: "refundInStore", meaning: "Set when the refund was given back in store, cash or card machine (use with #if)" },
-  { key: "paymentLine", meaning: "Paid online, Paid in store, To pay in store or Imported" },
+  { key: "paymentLine", meaning: "Paid online / Paid in store / To pay in store / Paid online, £X to pay in store / Part paid, £X to pay in store / Imported" },
   { key: "customerName", meaning: "Parent's full name (owner alerts)" },
   { key: "customerPhone", meaning: "Parent's phone (owner alerts)" },
   { key: "customerEmail", meaning: "Parent's email (owner alerts)" },

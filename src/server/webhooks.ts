@@ -11,7 +11,7 @@
  * The event objects are read structurally (only the fields used below), so the
  * handler does not depend on the Stripe SDK's type layout or API version.
  */
-import { and, asc, eq, inArray, notInArray, or, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notInArray, or, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { fmtPence } from "@/core/time";
@@ -97,6 +97,9 @@ async function dispatch(db: DbOrTx, venue: Pick<s.Venue, "id" | "slug">, event: 
       return checkoutExpired(db, venue, event.type, o);
     case "charge.refunded":
       return chargeRefunded(db, venue, event.type, o);
+    case "refund.updated":
+    case "charge.refund.updated":
+      return refundUpdated(db, venue, event.type, o);
     case "charge.dispute.created":
       return disputeCreated(db, venue, event.type, o);
     default:
@@ -325,6 +328,50 @@ async function chargeRefunded(db: DbOrTx, venue: Pick<s.Venue, "id">, type: stri
     }
   }
   return { type, bookingId: payment.bookingId, action: `refunds added ${added}, settled ${settled}` };
+}
+
+/**
+ * A single refund changed state (Stripe sends `refund.updated`, and on older API
+ * versions `charge.refund.updated`): a card refund that was `pending` has
+ * succeeded or failed. Found by the provider refund id and settled with
+ * `settleRefund` (which emails the customer once it succeeds, or gives the amount
+ * back when it failed). A refund BayPook has no row for yet is matched or
+ * recorded the same way as in `charge.refunded`.
+ */
+async function refundUpdated(db: DbOrTx, venue: Pick<s.Venue, "id">, type: string, refund: Obj): Promise<WebhookResult> {
+  const refundId = str(refund.id);
+  const amount = num(refund.amount);
+  if (!refundId) return { type, ignored: "no refund id" };
+  const status = refundStatus(refund.status);
+
+  const [known] = await db
+    .select({ id: s.refunds.id, status: s.refunds.status, bookingId: s.refunds.bookingId })
+    .from(s.refunds)
+    .innerJoin(s.payments, eq(s.payments.id, s.refunds.paymentId))
+    .where(and(eq(s.refunds.providerRefundId, refundId), eq(s.payments.venueId, venue.id)))
+    .limit(1);
+  if (known) {
+    if (status === "pending" || status === known.status) return { type, bookingId: known.bookingId, ignored: `refund is ${known.status}` };
+    await settleRefund(db, { refundId: known.id, status, providerRefundId: refundId });
+    return { type, bookingId: known.bookingId, action: `refund ${status}` };
+  }
+
+  const payment = await findPaymentForCharge(db, venue.id, idOf(refund.charge), idOf(refund.payment_intent));
+  if (!payment) return { type, ignored: "unknown payment" };
+  if (amount === null) return { type, bookingId: payment.bookingId, ignored: "no amount" };
+  // One of our own refunds still waiting for its provider id (same amount, pending).
+  const [ours] = await db
+    .select({ id: s.refunds.id })
+    .from(s.refunds)
+    .where(and(eq(s.refunds.paymentId, payment.id), eq(s.refunds.status, "pending"), isNull(s.refunds.providerRefundId), eq(s.refunds.amountPence, amount)))
+    .orderBy(asc(s.refunds.createdAt))
+    .limit(1);
+  if (ours) {
+    await settleRefund(db, { refundId: ours.id, status, providerRefundId: refundId });
+    return { type, bookingId: payment.bookingId, action: `refund ${status}` };
+  }
+  const added = await recordProviderRefund(db, { paymentId: payment.id, amountPence: amount, providerRefundId: refundId, status });
+  return { type, bookingId: payment.bookingId, action: added ? "refund added" : "refund already recorded" };
 }
 
 // ---------- disputes ----------

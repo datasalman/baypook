@@ -3,11 +3,21 @@ import type * as s from "@/db/schema";
 import type { ServiceWithCatalogue } from "@/server/catalogue";
 import type { EditorCatalogue } from "../_components/QuantitiesEditor";
 
-export function editorCatalogue(service: ServiceWithCatalogue, venue: Pick<s.Venue, "maxPlacesPerBooking">): EditorCatalogue {
+/**
+ * Items on sale, in catalogue order. `keep` adds archived items that are already
+ * on a booking being changed (they stay allowed there, at the price paid).
+ */
+export function editorCatalogue(
+  service: ServiceWithCatalogue,
+  venue: Pick<s.Venue, "maxPlacesPerBooking">,
+  keep: { optionIds?: Iterable<string>; addOnIds?: Iterable<string> } = {},
+): EditorCatalogue {
+  const keepOptions = new Set(keep.optionIds ?? []);
+  const keepAddOns = new Set(keep.addOnIds ?? []);
   return {
     kind: service.kind,
     options: service.options
-      .filter((o) => !o.archivedAt)
+      .filter((o) => !o.archivedAt || keepOptions.has(o.id))
       .map((o) => ({
         id: o.id,
         name: o.name,
@@ -18,7 +28,7 @@ export function editorCatalogue(service: ServiceWithCatalogue, venue: Pick<s.Ven
         inStoreNoteShort: o.inStoreNoteShort,
       })),
     addOns: service.addOns
-      .filter((a) => !a.archivedAt)
+      .filter((a) => !a.archivedAt || keepAddOns.has(a.id))
       .map((a) => ({
         id: a.id,
         name: a.name,

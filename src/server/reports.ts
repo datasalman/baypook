@@ -8,7 +8,7 @@
  * as taken, and the refund is subtracted on the day it was given. Imported
  * payments (taken by Wix before the switch) are not BayPook takings and are left out.
  */
-import { and, asc, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { addDays, endOfLocalDay, fmtLocal, localDate, startOfLocalDay } from "@/core/time";
@@ -331,7 +331,11 @@ export async function refundsInRange(db: DbOrTx, input: RangeInput): Promise<Ref
 
 export type OutstandingItem = BookingListItem & { owedPence: number };
 
-/** Bookings still owed (pay in store), any date, soonest first. */
+/**
+ * Bookings still owed, any date, soonest first. Owed means `total - paid > 0`
+ * (DECISIONS.md 29): refunds do not make a booking owe again. Pending online
+ * bookings (not paid yet) and cancelled ones are left out.
+ */
 export async function outstanding(db: DbOrTx, input: { venueIds: string[] }): Promise<OutstandingItem[]> {
   if (!input.venueIds.length) return [];
   const rows = await db
@@ -340,7 +344,13 @@ export async function outstanding(db: DbOrTx, input: { venueIds: string[] }): Pr
     .innerJoin(s.venues, eq(s.bookings.venueId, s.venues.id))
     .innerJoin(s.services, eq(s.bookings.serviceId, s.services.id))
     .innerJoin(s.customers, eq(s.bookings.customerId, s.customers.id))
-    .where(and(inArray(s.bookings.venueId, input.venueIds), eq(s.bookings.paymentStatus, "owed"), ne(s.bookings.status, "cancelled")))
+    .where(
+      and(
+        inArray(s.bookings.venueId, input.venueIds),
+        sql`${s.bookings.totalPence} - ${s.bookings.paidPence} > 0`,
+        inArray(s.bookings.status, ["confirmed", "no_show"]),
+      ),
+    )
     .orderBy(asc(s.bookings.startsAt));
   return rows.map((r) => {
     const item = toListItem(r);

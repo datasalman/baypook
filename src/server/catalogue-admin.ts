@@ -151,14 +151,18 @@ async function orgTz(db: DbOrTx): Promise<string> {
 /** Days ahead that `refreshServiceSessions` materialises. */
 export const SESSION_WINDOW_DAYS = 62;
 
-/** Re-run session generation for one service over the next 62 days. */
-export async function refreshServiceSessions(db: DbOrTx, serviceId: string): Promise<void> {
+/**
+ * Re-run session generation for one service over the next 62 days. Returns the ids of
+ * sessions the timetable no longer produces that stay scheduled because of live bookings.
+ */
+export async function refreshServiceSessions(db: DbOrTx, serviceId: string): Promise<string[]> {
   const [svc] = await db.select().from(s.services).where(eq(s.services.id, serviceId)).limit(1);
-  if (!svc || svc.kind !== "session" || svc.archivedAt) return;
+  if (!svc || svc.kind !== "session" || svc.archivedAt) return [];
   const venue = await loadVenue(db, svc.venueId);
   const tz = await orgTz(db);
   const today = localDate(new Date(), tz);
-  await ensureSessions(db, svc, venue, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
+  const r = await ensureSessions(db, svc, venue, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
+  return r.keptScheduled ?? [];
 }
 
 /** Re-run session generation for every session service at a venue. */
@@ -647,26 +651,18 @@ export async function addTimetableException(
     await audit(tx, { user, action: "exception.add", entityType: "timetable_exception", entityId: row.id, venueId: service.venueId, after: row });
     return row;
   });
-  await refreshServiceSessions(db, serviceId);
+  const kept = await refreshServiceSessions(db, serviceId);
 
+  // Built from what `ensureSessions` actually kept, so the message and the timetable agree.
   let keptWithBookings = 0;
-  if (kind === "cancel") {
+  if (kind === "cancel" && kept.length) {
     const start = startTime ? zonedDateTime(data.date, startTime, tz) : startOfLocalDay(data.date, tz);
     const end = startTime ? new Date(start.getTime() + 1) : endOfLocalDay(data.date, tz);
     const rows = await db
       .select({ id: s.sessions.id })
       .from(s.sessions)
-      .innerJoin(s.bookings, eq(s.bookings.sessionId, s.sessions.id))
-      .where(
-        and(
-          eq(s.sessions.serviceId, serviceId),
-          eq(s.sessions.status, "scheduled"),
-          gte(s.sessions.startsAt, start),
-          lt(s.sessions.startsAt, end),
-          inArray(s.bookings.status, ["pending", "confirmed"]),
-        ),
-      );
-    keptWithBookings = new Set(rows.map((r) => r.id)).size;
+      .where(and(inArray(s.sessions.id, kept), gte(s.sessions.startsAt, start), lt(s.sessions.startsAt, end)));
+    keptWithBookings = rows.length;
   }
   return { exception, keptWithBookings };
 }

@@ -179,7 +179,8 @@ describe("C1: leftover sessions referenced by dead holds or bookings", () => {
     }
     expect(avail.find((x) => x.startsAt.toISOString() === at("16:00"))).toBeUndefined();
     const [kept] = await c.db.select().from(s.sessions).where(eq(s.sessions.id, sessionId("14:00")));
-    expect(kept).toMatchObject({ pinned: true, source: "manual", status: "cancelled" });
+    // Cancelled but not pinned, so it comes back if the timetable produces it again (round 2, finding 2).
+    expect(kept).toMatchObject({ pinned: false, source: "rule", status: "cancelled" });
     // A second call is just as happy.
     await expect(getSessionAvailability(c.db, { venue: c.venue, service: c.workshops, from: DAY, to: DAY, now: NOW })).resolves.toBeDefined();
   });
@@ -201,15 +202,28 @@ describe("C2: two checkouts on one hold", () => {
     expect(await remaining("14:00")).toBe(7);
   });
 
+  // On PGlite (one connection) the two calls run one after the other, so this proves the
+  // re-read of the hold under its lock rather than real row-lock contention; Postgres adds the wait.
   it("serialises checkouts started at the same moment", async () => {
     const h = await hold("14:00", 2);
     const results = await Promise.allSettled([checkout(h.id), checkout(h.id)]);
-    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    // The one superseded while its payment page was being made is refused (round 2, finding 6).
+    const ok = results.filter((r) => r.status === "fulfilled");
+    expect(ok.length).toBeGreaterThanOrEqual(1);
+    for (const r of results) {
+      if (r.status === "rejected") expect(r.reason).toMatchObject({ code: "STATE" });
+    }
     const pending = await c.db
       .select()
       .from(s.bookings)
       .where(and(eq(s.bookings.holdId, h.id), eq(s.bookings.status, "pending")));
     expect(pending).toHaveLength(1);
+    expect(ok.map((r) => r.value.bookingId)).toContain(pending[0].id);
+    // Only the surviving booking's payment page is recorded, on the hold and as a pending payment.
+    const [row] = await c.db.select().from(s.holds).where(eq(s.holds.id, h.id));
+    expect(row.checkoutId).toBe(`demo_cs_${pending[0].id}`);
+    const pendingPayments = await c.db.select().from(s.payments).where(eq(s.payments.status, "pending"));
+    expect(pendingPayments.map((p) => p.bookingId)).toEqual([pending[0].id]);
     expect(await remaining("14:00")).toBe(8);
   });
 
@@ -313,6 +327,8 @@ describe("C4: changing a service's room", () => {
 });
 
 describe("C6: refunds at the same moment", () => {
+  // As above: on PGlite the two refunds are serialised, so this proves the re-check of
+  // `paid − refunded` on the locked booking row, not concurrent lock waits.
   it("refunds the full amount once; the second gets LIMIT or STATE", async () => {
     const b = await stripePaid("14:00", 2, 1);
     const results = await Promise.allSettled([

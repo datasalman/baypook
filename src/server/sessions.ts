@@ -9,20 +9,31 @@ import * as s from "@/db/schema";
 import { generateOccurrences, occurrenceKey } from "@/core/timetable";
 import { endOfLocalDay, startOfLocalDay } from "@/core/time";
 
-export type EnsureSessionsResult = { inserted: number; updated: number; removed: number };
+/**
+ * `keptScheduled` lists the sessions in the window that the rules no longer produce
+ * but that stay scheduled because they still have live bookings (pending, confirmed,
+ * no-show). It is present only when there are any, so callers can tell the admin
+ * exactly which sessions were kept.
+ */
+export type EnsureSessionsResult = { inserted: number; updated: number; removed: number; keptScheduled?: string[] };
 
 /**
  * Ensure the `sessions` rows for one service between two local dates (inclusive).
  * - inserts missing occurrences
- * - updates capacity/room/length of unpinned rows that drifted from the rules; a
+ * - updates capacity/room/length/status of unpinned rows that drifted from the rules
+ *   (so a leftover cancelled earlier comes back when the rules produce it again); a
  *   row that would change room while it carries live bookings (pending, confirmed,
  *   no-show) or active holds is pinned where it is instead, so the places already
  *   sold stay in the room the customers were told about
  * - deletes unpinned rows no longer produced by the rules only when nothing
  *   references them. `holds.session_id` and `bookings.session_id` are foreign keys
  *   without cascade, so a row with ANY referencing booking or hold (even a
- *   cancelled booking or an expired hold) is pinned as manual instead: scheduled
- *   when it still has live bookings or active holds, otherwise cancelled
+ *   cancelled booking or an expired hold) is kept instead:
+ *   - with live bookings it is pinned as manual and stays scheduled;
+ *   - otherwise (only holds, or only finished bookings) it is set cancelled but left
+ *     unpinned with its source, so it is restored if the rules produce it again. An
+ *     active hold alone is not a reason to keep a session the owner has cancelled:
+ *     that hold's checkout then fails
  */
 export async function ensureSessions(
   db: DbOrTx,
@@ -63,14 +74,16 @@ export async function ensureSessions(
       continue;
     }
     existingByKey.delete(key);
-    if (row.pinned) continue;
+    // Rows that older versions pinned as cancelled "manual" leftovers come back like any other unpinned row.
+    const legacyLeftover = row.pinned && row.source === "manual" && row.status === "cancelled";
+    if (row.pinned && !legacyLeftover) continue;
     const drift =
       row.capacity !== occ.capacity ||
       row.roomId !== occ.roomId ||
       row.endsAt.getTime() !== occ.endsAt.getTime() ||
       row.status !== "scheduled" ||
       row.source !== occ.source;
-    if (drift && row.roomId !== occ.roomId && (await busy()).has(row.id)) {
+    if (drift && row.status === "scheduled" && row.roomId !== occ.roomId && (await busy()).has(row.id)) {
       // Moving would strand the places already sold in the old room: keep it as it is.
       await db.update(s.sessions).set({ pinned: true, updatedAt: new Date() }).where(eq(s.sessions.id, row.id));
       result.updated++;
@@ -79,7 +92,7 @@ export async function ensureSessions(
     if (drift) {
       await db
         .update(s.sessions)
-        .set({ capacity: occ.capacity, roomId: occ.roomId, endsAt: occ.endsAt, status: "scheduled", source: occ.source, updatedAt: new Date() })
+        .set({ capacity: occ.capacity, roomId: occ.roomId, endsAt: occ.endsAt, status: "scheduled", source: occ.source, pinned: false, updatedAt: new Date() })
         .where(eq(s.sessions.id, row.id));
       result.updated++;
     }
@@ -90,7 +103,9 @@ export async function ensureSessions(
   }
 
   // Leftovers: rows in the window the rules no longer produce.
-  const leftovers = Array.from(existingByKey.values()).filter((r) => !r.pinned && r.source !== "manual");
+  const leftoverRows = Array.from(existingByKey.values());
+  const liveBooked = leftoverRows.length ? await liveBookingSessionIds(db, leftoverRows.map((r) => r.id)) : new Set<string>();
+  const leftovers = leftoverRows.filter((r) => !r.pinned && r.source !== "manual");
   if (leftovers.length) {
     const ids = leftovers.map((r) => r.id);
     const [bookedIds, heldIds] = await Promise.all([
@@ -98,24 +113,25 @@ export async function ensureSessions(
       db.select({ id: s.holds.sessionId }).from(s.holds).where(inArray(s.holds.sessionId, ids)),
     ]);
     const referenced = new Set([...bookedIds, ...heldIds].map((r) => r.id).filter((x): x is string => Boolean(x)));
-    const live = referenced.size ? await busy() : new Set<string>();
     const removable = ids.filter((id) => !referenced.has(id));
-    const keepScheduled = ids.filter((id) => referenced.has(id) && live.has(id));
-    const keepCancelled = ids.filter((id) => referenced.has(id) && !live.has(id));
+    const keepScheduled = ids.filter((id) => referenced.has(id) && liveBooked.has(id));
+    const keepCancelled = leftovers.filter((r) => referenced.has(r.id) && !liveBooked.has(r.id) && r.status !== "cancelled").map((r) => r.id);
     if (removable.length) {
       await db.delete(s.sessions).where(inArray(s.sessions.id, removable));
       result.removed += removable.length;
     }
     if (keepScheduled.length) {
       await db.update(s.sessions).set({ pinned: true, source: "manual", updatedAt: new Date() }).where(inArray(s.sessions.id, keepScheduled));
+      result.updated += keepScheduled.length;
     }
     if (keepCancelled.length) {
-      await db
-        .update(s.sessions)
-        .set({ pinned: true, source: "manual", status: "cancelled", updatedAt: new Date() })
-        .where(inArray(s.sessions.id, keepCancelled));
+      // Unpinned and with its source kept: the drift check restores it if the rules produce it again.
+      await db.update(s.sessions).set({ status: "cancelled", updatedAt: new Date() }).where(inArray(s.sessions.id, keepCancelled));
+      result.updated += keepCancelled.length;
     }
   }
+  const kept = leftoverRows.filter((r) => r.status === "scheduled" && liveBooked.has(r.id)).map((r) => r.id);
+  if (kept.length) result.keptScheduled = kept;
 
   return result;
 }
@@ -134,6 +150,16 @@ async function liveSessionIds(db: DbOrTx, ids: string[]): Promise<Set<string>> {
       .where(and(inArray(s.holds.sessionId, ids), eq(s.holds.status, "active"))),
   ]);
   return new Set([...booked, ...held].map((r) => r.id).filter((x): x is string => Boolean(x)));
+}
+
+/** The ids (of those given) with live bookings (pending, confirmed, no-show); holds do not count. */
+async function liveBookingSessionIds(db: DbOrTx, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db
+    .select({ id: s.bookings.sessionId })
+    .from(s.bookings)
+    .where(and(inArray(s.bookings.sessionId, ids), inArray(s.bookings.status, ["pending", "confirmed", "no_show"])));
+  return new Set(rows.map((r) => r.id).filter((x): x is string => Boolean(x)));
 }
 
 /** Ensure sessions for every session-kind service at a venue in the window. */

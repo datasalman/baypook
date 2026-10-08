@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { BayPookError, formatPence, friendlyMessage, isPayInStoreCheckout, type BayPookClient } from "@/client/client";
 import type { CheckoutRequest, HoldResponse, Organisation, Service, Venue } from "@/client/types";
 import { formatWhen } from "../_lib/dates";
@@ -165,6 +165,16 @@ export function DetailsStep({
   const [payInStore, setPayInStore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+
+  // Coming back from the payment page with the browser's Back button restores this
+  // page from the back/forward cache with the button still saying "Taking you to payment…".
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setBusy(false);
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   const set = <K extends keyof DetailsInput>(key: K, value: DetailsInput[K]) => {
     const next = { ...input, [key]: value };

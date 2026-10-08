@@ -19,8 +19,9 @@ function linkClass() {
   return `font-semibold underline underline-offset-4 ${focusRing}`;
 }
 
-function SummaryView({ summary, payInStore }: { summary: BookingSummary; payInStore: boolean }) {
-  const owed = Math.max(0, summary.totalPence - summary.paidPence);
+function SummaryView({ summary }: { summary: BookingSummary }) {
+  // Owed is `total - paid` (refunds do not count; DECISIONS.md 29), the same figure the admin and emails use.
+  const owed = summary.status === "cancelled" ? 0 : Math.max(0, summary.totalPence - summary.paidPence);
   const note = typeof summary.inStoreNote === "string" ? summary.inStoreNote : (summary.inStoreNote?.short ?? null);
   const v = summary.venue;
   const address = v.address.includes(v.postcode) ? v.address : `${v.address}, ${v.postcode}`;
@@ -77,7 +78,7 @@ function SummaryView({ summary, payInStore }: { summary: BookingSummary; payInSt
           <span>Total</span>
           <span className="tabular-nums">{formatPence(summary.totalPence)}</span>
         </p>
-        {payInStore || summary.paymentStatus === "owed" ? (
+        {owed > 0 ? (
           <p className="mt-1 flex justify-between gap-4 font-semibold">
             <span>To pay in store</span>
             <span className="tabular-nums">{formatPence(owed)}</span>
@@ -226,7 +227,7 @@ export function ThanksView() {
     return (
       <section>
         {banner}
-        <SummaryView summary={summary} payInStore={payInStore} />
+        <SummaryView summary={summary} />
         <a href={restart} className={`mt-8 inline-block ${linkClass()}`}>
           Book something else
         </a>

@@ -24,7 +24,7 @@ Each venue has its own Stripe account so payouts land in separate bank accounts.
    - Lakeside → `STRIPE_SECRET_KEY__LAKESIDE`
 4. Webhooks (one per account). Developers, Webhooks, **Add endpoint**:
    - Endpoint URL: `https://book-api.slimedom.com/api/webhooks/stripe/south-woodford` (and `/lakeside` for the Lakeside account).
-   - Events to send: `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `charge.refunded`, `charge.dispute.created`.
+   - Events to send: `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `charge.refunded`, `refund.updated`, `charge.refund.updated`, `charge.dispute.created`. (The two refund events tell BayPook when a card refund that was still pending has gone through or failed. Stripe lists them separately, so tick both.)
    - After saving, reveal the **Signing secret** (`whsec_…`) → `STRIPE_WEBHOOK_SECRET__SOUTH_WOODFORD` / `STRIPE_WEBHOOK_SECRET__LAKESIDE`.
 5. Apple Pay and Google Pay: Settings, Payment methods, make sure **Apple Pay** and **Google Pay** are on. Stripe Checkout shows them automatically on supported devices. Because checkout is hosted by Stripe, no domain verification is needed.
 6. Rehearse with test cards (`4242 4242 4242 4242`, any future date, any CVC) on the live site. Check the booking confirms in the admin and the email arrives.

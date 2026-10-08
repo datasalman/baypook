@@ -65,16 +65,20 @@ export async function expireHoldsJob(db: DbOrTx, now: Date = new Date()): Promis
         const [hold] = await tx.select().from(s.holds).where(eq(s.holds.id, row.id)).for("update");
         if (!hold || hold.status !== "active" || hold.expiresAt.getTime() > now.getTime()) return null;
         let cancelled = false;
+        // The booking's own open payment pages too (a pending payment row whose page never reached the hold).
+        let bookingCheckoutIds: string[] = [];
         if (hold.bookingId) {
-          cancelled = (await cancelPendingBookingInTx(tx, { bookingId: hold.bookingId, reason: "expired" })).cancelled;
+          const r = await cancelPendingBookingInTx(tx, { bookingId: hold.bookingId, reason: "expired" });
+          cancelled = r.cancelled;
+          bookingCheckoutIds = r.checkoutIds;
         }
         await tx.update(s.holds).set({ status: "expired" }).where(eq(s.holds.id, hold.id));
-        return { checkoutId: hold.checkoutId, cancelled };
+        return { checkoutIds: [hold.checkoutId, ...bookingCheckoutIds].filter((x): x is string => Boolean(x)), cancelled };
       });
       if (!res) continue;
       summary.expired++;
       if (res.cancelled) summary.bookingsCancelled++;
-      if (res.checkoutId) checkouts.push({ checkoutId: res.checkoutId, slug: row.slug });
+      for (const checkoutId of res.checkoutIds) checkouts.push({ checkoutId, slug: row.slug });
     } catch (e) {
       summary.errors.push(`hold ${row.id}: ${e instanceof Error ? e.message : String(e)}`);
     }

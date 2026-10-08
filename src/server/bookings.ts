@@ -123,23 +123,39 @@ function isUniqueViolation(e: unknown): boolean {
 }
 
 /**
- * The payment summary kept on the booking (see DECISIONS.md 11), derived from
- * its money columns. What is still owed (`total - (paid - refunded)`) comes
- * first: a booking whose places went up after a partial refund owes money, it is
- * not "partially refunded". A cancelled booking owes nothing, so for it (and when
- * nothing is owed) the refund state wins.
+ * The payment summary kept on the booking (see DECISIONS.md 11 and 29), derived
+ * from its money columns. A booking is `owed` when `total - paid > 0`: money
+ * given back (refunds) does not make it owing again, so a goodwill partial refund
+ * shows as `partially_refunded`, while places added after a partial refund (the
+ * total rises above what was paid) are owed. A cancelled booking owes nothing, so
+ * for it (and when nothing is owed) the refund state wins.
  */
 export function derivePaymentStatus(
   b: Pick<s.Booking, "totalPence" | "paidPence" | "refundedPence" | "paymentMethod"> & { status?: s.Booking["status"] },
 ): s.Booking["paymentStatus"] {
   const unpaid = b.paymentMethod === "online_card" ? "unpaid" : "owed";
-  const net = b.paidPence - b.refundedPence;
-  if (b.status !== "cancelled" && b.totalPence - net > 0) {
+  if (b.status !== "cancelled" && owedPence(b) > 0) {
     return b.paidPence <= 0 && b.refundedPence <= 0 ? unpaid : "owed";
   }
   if (b.refundedPence > 0) return b.refundedPence >= b.paidPence ? "refunded" : "partially_refunded";
   if (b.paidPence <= 0) return b.totalPence <= 0 ? "paid" : unpaid;
   return b.paidPence >= b.totalPence ? "paid" : "owed";
+}
+
+/** Money still to collect: `total - paid` (refunds do not count; DECISIONS.md 29). Never negative. */
+export function owedPence(b: Pick<s.Booking, "totalPence" | "paidPence">): number {
+  return Math.max(0, b.totalPence - b.paidPence);
+}
+
+/**
+ * What a change of places leaves to settle: positive = still to collect
+ * (`total - paid`), negative = paid more than the new total and not yet given
+ * back (`total - (paid - refunded)`), zero = nothing either way.
+ */
+export function changeDelta(b: Pick<s.Booking, "totalPence" | "paidPence" | "refundedPence">): number {
+  const owed = owedPence(b);
+  if (owed > 0) return owed;
+  return Math.min(0, b.totalPence - (b.paidPence - b.refundedPence));
 }
 
 async function loadBookingRow(db: DbOrTx, bookingId: string, lock = false): Promise<s.Booking> {
@@ -400,6 +416,7 @@ export async function confirmBookingPaid(
       let target: BookingStatus = before.status;
       let needsRefund = false;
       let rivalCheckoutIds: string[] = [];
+      let reinstatedRoomId: string | null = null;
       if (before.status === "pending") {
         assertTransition("pending", "confirmed");
         target = "confirmed";
@@ -437,6 +454,11 @@ export async function confirmBookingPaid(
           });
           assertTransition("cancelled", "confirmed");
           target = "confirmed";
+          if (before.sessionId) {
+            // The session may have moved room while the booking was cancelled: the places are in its room now.
+            const [session] = await tx.select({ roomId: s.sessions.roomId }).from(s.sessions).where(eq(s.sessions.id, before.sessionId)).limit(1);
+            if (session && session.roomId !== before.roomId) reinstatedRoomId = session.roomId;
+          }
         } catch (e) {
           if (!(e instanceof AvailabilityError)) throw e;
           rivalCheckoutIds = [];
@@ -485,6 +507,7 @@ export async function confirmBookingPaid(
         changes.status = target;
         changes.cancelledAt = null;
         changes.cancelReason = null;
+        if (reinstatedRoomId) changes.roomId = reinstatedRoomId;
       }
       const booking = await updateBooking(tx, before.id, changes);
 
@@ -581,7 +604,17 @@ export type PendingCancelReason = "expired" | "declined" | "abandoned";
  */
 export async function cancelPendingBookingInTx(
   tx: DbOrTx,
-  input: { bookingId: string; reason: PendingCancelReason; action?: string },
+  input: {
+    bookingId: string;
+    reason: PendingCancelReason;
+    action?: string;
+    /**
+     * Keep the hold active and detach it from this booking (its `bookingId` and
+     * `checkoutId` are cleared), so the customer can press Pay again with the same
+     * places. Used when the payment page could not be opened.
+     */
+    keepHold?: boolean;
+  },
 ): Promise<{ cancelled: boolean; venueId: string | null; checkoutIds: string[] }> {
   const before = await loadBookingRow(tx, input.bookingId, true);
   if (before.status !== "pending") return { cancelled: false, venueId: before.venueId, checkoutIds: [] };
@@ -592,7 +625,12 @@ export async function cancelPendingBookingInTx(
     cancelledAt: new Date(),
     cancelReason: input.reason,
   });
-  if (before.holdId) {
+  if (before.holdId && input.keepHold) {
+    await tx
+      .update(s.holds)
+      .set({ bookingId: null, checkoutId: null })
+      .where(and(eq(s.holds.id, before.holdId), eq(s.holds.bookingId, before.id)));
+  } else if (before.holdId) {
     await tx
       .update(s.holds)
       .set({ status: input.reason === "expired" ? "expired" : "released" })
@@ -622,7 +660,7 @@ export async function cancelPendingBookingInTx(
  */
 export async function cancelPendingBooking(
   db: DbOrTx,
-  input: { bookingId: string; reason: PendingCancelReason },
+  input: { bookingId: string; reason: PendingCancelReason; keepHold?: boolean },
 ): Promise<void> {
   const res = await mapErrors(() => db.transaction((tx) => cancelPendingBookingInTx(tx, input)));
   if (res.cancelled && res.venueId && input.reason !== "expired") await expireCheckouts(db, res.venueId, res.checkoutIds);
@@ -1125,7 +1163,42 @@ export async function changeBookingCounts(
       return after;
     });
     await sideEffect("calendar update", () => syncBookingToCalendar(db, booking.id, "update"));
-    return { booking, delta: booking.totalPence - (booking.paidPence - booking.refundedPence) };
+    return { booking, delta: changeDelta(booking) };
+  });
+}
+
+export type CountsPreview = {
+  lines: s.BookingLine[];
+  addOns: s.BookingAddOn[];
+  totalPence: number;
+  places: number;
+  /** As `changeBookingCounts` would return it: + to collect, − to refund. */
+  delta: number;
+};
+
+/**
+ * What `changeBookingCounts` would charge for these counts, without saving
+ * anything: the same kept-price quote (places already sold keep their price,
+ * archived items already on the booking stay allowed). Capacity is not checked.
+ */
+export async function previewBookingCounts(
+  db: DbOrTx,
+  input: { bookingId: string; user: CurrentUser; lines: { optionId: string; qty: number }[]; addOns: { addOnId: string; qty: number }[] },
+): Promise<CountsPreview> {
+  const booking = await loadBookingRow(db, input.bookingId);
+  requireAccess(input.user, booking.venueId);
+  if (booking.status !== "confirmed") throw new BookingError("STATE", "Only a confirmed booking can be changed.");
+  const venue = await loadVenue(db, booking.venueId);
+  const service = await loadService(db, booking.serviceId);
+  return mapErrors(async () => {
+    const q = requoteKeepingPrices(service, venue, booking, input.lines, input.addOns);
+    return {
+      lines: q.lines,
+      addOns: q.addOns,
+      totalPence: q.totalPence,
+      places: q.places,
+      delta: changeDelta({ ...booking, totalPence: q.totalPence }),
+    };
   });
 }
 
@@ -1173,13 +1246,15 @@ function requoteKeepingPrices(
     addOns: service.addOns.map((a) => (soldAddOns.has(a.id) ? { ...a, archivedAt: null } : a)),
   };
   const q = quoteForService(null, { service: catalogue, venue, lines, addOns });
-  const outLines = q.lines.flatMap((l) =>
-    keepSoldPrices(
-      l.qty,
-      l.unitPence,
-      booking.lines.filter((x) => x.optionId === l.optionId),
-    ).map((t) => ({ ...l, qty: t.qty, unitPence: t.unitPence, totalPence: t.qty * t.unitPence })),
-  );
+  const outLines = q.lines.flatMap((l) => {
+    const sold = booking.lines.filter((x) => x.optionId === l.optionId);
+    return keepSoldPrices(l.qty, l.unitPence, sold).map((t) => {
+      // A sold package keeps what it was sold with (price and children included), not today's.
+      const soldAt = sold.find((x) => x.unitPence === t.unitPence);
+      const includedChildren = soldAt ? (soldAt.includedChildren ?? null) : l.includedChildren;
+      return { ...l, qty: t.qty, unitPence: t.unitPence, totalPence: t.qty * t.unitPence, includedChildren };
+    });
+  });
   const outAddOns = q.addOns.flatMap((a) => {
     const minutesEach = a.qty > 0 ? a.extraMinutes / a.qty : 0;
     return keepSoldPrices(
@@ -1189,7 +1264,12 @@ function requoteKeepingPrices(
     ).map((t) => ({ ...a, qty: t.qty, unitPence: t.unitPence, totalPence: t.qty * t.unitPence, extraMinutes: minutesEach * t.qty }));
   });
   const subtotalPence = outLines.reduce((n, l) => n + l.totalPence, 0) + outAddOns.reduce((n, a) => n + a.totalPence, 0);
-  return { ...q, lines: outLines, addOns: outAddOns, subtotalPence, totalPence: subtotalPence };
+  // Slots: children = those included in the (kept) package + per-child extras. Sessions: places as quoted.
+  const places =
+    service.kind === "slot"
+      ? outLines.reduce((n, l) => n + (l.includedChildren ?? 0) * l.qty, 0) + outAddOns.reduce((n, a) => n + (a.perChild ? a.qty : 0), 0)
+      : q.places;
+  return { ...q, lines: outLines, addOns: outAddOns, subtotalPence, totalPence: subtotalPence, places };
 }
 
 /** Record money taken in store (cash or the card machine). */
