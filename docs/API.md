@@ -11,7 +11,7 @@ Every error is `{ "error": { "code": string, "message": string, "limit"?: number
 |---|---|---|
 | `INVALID` | 400 | Body or query failed validation. `message` says what. |
 | `NOT_FOUND` | 404 | Venue, service, hold or booking not found. |
-| `LIMIT` | 409 | More places than the venue's per-booking limit (or an add-on/option limit). `limit` carries the number. |
+| `LIMIT` | 409 | More places than allowed. `limit` carries the number: the venue's per-booking limit, an add-on/option limit, or (on a hold) the places still left in that session, e.g. "Only 2 places left". |
 | `GONE` | 409 | The time is no longer available (full, blocked, room busy, or past the cut-off). |
 | `HOLD_EXPIRED` | 410 | The hold lapsed before checkout. Start again from the time step. |
 | `UNAVAILABLE` | 503 | This venue cannot be booked online right now (no payment provider configured, or venue closed). |

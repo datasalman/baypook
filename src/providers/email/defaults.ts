@@ -26,7 +26,7 @@ export const PLACEHOLDERS: { key: string; meaning: string }[] = [
   { key: "contactLine", meaning: "How to reach the business (email, phone, WhatsApp)" },
   { key: "organisationName", meaning: "Business name" },
   { key: "refundAmount", meaning: "Amount refunded, e.g. £17.00" },
-  { key: "paymentLine", meaning: "Paid online / Pay in store / Paid in store" },
+  { key: "paymentLine", meaning: "Paid online, Paid in store, To pay in store or Imported" },
   { key: "customerName", meaning: "Parent's full name (owner alerts)" },
   { key: "customerPhone", meaning: "Parent's phone (owner alerts)" },
   { key: "customerEmail", meaning: "Parent's email (owner alerts)" },
