@@ -21,7 +21,8 @@ import {
 } from "@/server/bookings";
 import { withFlash } from "@/components/ui/flash";
 import { bookingErrorMessage } from "../_lib/errors";
-import { amountField, field, quantitiesFromForm, runBookingAction } from "../_lib/run";
+import type { FormActionState } from "@/components/ui/form-state";
+import { amountField, field, quantitiesFromForm, runBookingAction, runBookingFormAction } from "../_lib/run";
 
 function bookingId(fd: FormData): string {
   const id = field(fd, "bookingId");
@@ -30,10 +31,10 @@ function bookingId(fd: FormData): string {
 
 const detailPath = (id: string) => (id ? `/admin/bookings/${id}` : "/admin/bookings");
 
-/** Cancel, optionally with a full or part refund first. */
-export async function cancelBookingAction(fd: FormData): Promise<void> {
+/** Cancel, optionally with a full or part refund first. Used with <ActionForm>: errors keep the panel open. */
+export async function cancelBookingAction(_prev: FormActionState, fd: FormData): Promise<FormActionState> {
   const id = bookingId(fd);
-  await runBookingAction(detailPath(id), async ({ db, user }) => {
+  return runBookingFormAction(detailPath(id), async ({ db, user }) => {
     if (!id) throw new BookingError("NOT_FOUND", "We could not find that booking.");
     const reason = field(fd, "reason").slice(0, 500);
     const choice = field(fd, "refund");
@@ -58,9 +59,9 @@ export async function cancelBookingAction(fd: FormData): Promise<void> {
   });
 }
 
-export async function refundBookingAction(fd: FormData): Promise<void> {
+export async function refundBookingAction(_prev: FormActionState, fd: FormData): Promise<FormActionState> {
   const id = bookingId(fd);
-  await runBookingAction(detailPath(id), async ({ db, user }) => {
+  return runBookingFormAction(detailPath(id), async ({ db, user }) => {
     if (!id) throw new BookingError("NOT_FOUND", "We could not find that booking.");
     const amount = amountField(fd, "amount");
     if (!Number.isInteger(amount) || amount < 1) throw new BookingError("INVALID", "Enter the amount to refund, for example 17.50.");
@@ -69,9 +70,9 @@ export async function refundBookingAction(fd: FormData): Promise<void> {
   });
 }
 
-export async function markPaidAction(fd: FormData): Promise<void> {
+export async function markPaidAction(_prev: FormActionState, fd: FormData): Promise<FormActionState> {
   const id = bookingId(fd);
-  await runBookingAction(detailPath(id), async ({ db, user }) => {
+  return runBookingFormAction(detailPath(id), async ({ db, user }) => {
     if (!id) throw new BookingError("NOT_FOUND", "We could not find that booking.");
     const method = field(fd, "method");
     if (method !== "cash" && method !== "card_machine") throw new BookingError("INVALID", "Choose cash or card machine.");

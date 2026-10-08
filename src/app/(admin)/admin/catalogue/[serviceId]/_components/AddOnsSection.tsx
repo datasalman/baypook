@@ -59,7 +59,7 @@ export function AddOnsSection({ service: svc, canManage, back }: { service: Serv
   const live = svc.addOns.filter((a) => !a.archivedAt);
   const archived = svc.addOns.filter((a) => a.archivedAt);
   return (
-    <section id="addons" className="scroll-mt-16">
+    <section id="addons" className="scroll-mt-36">
       <SectionTitle>Add-ons</SectionTitle>
       {live.length ? (
         <ul className="flex flex-col gap-2">

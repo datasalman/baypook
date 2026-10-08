@@ -9,7 +9,7 @@ import { Badge, Banner, Button, DateNav, EmptyState, PageHeader } from "@/compon
 import { withFlash } from "@/components/ui/flash";
 import { cn } from "@/components/ui/cn";
 import { dateParam, todayIn, type SearchParams } from "../../../_lib/dates";
-import { adminSessionChoices, adminSlotChoices, STAFF_REASON } from "../../_lib/availability";
+import { adminSessionChoices, adminSlotChoices, STAFF_REASON, TIMING_SHORT } from "../../_lib/availability";
 import { customerName } from "../../_lib/labels";
 import { moveBookingAction } from "../actions";
 
@@ -79,11 +79,9 @@ export default async function MoveBookingPage({ params, searchParams }: { params
                           ? "Now"
                           : slot.reason
                             ? STAFF_REASON[slot.reason]
-                            : slot.timing === "past"
-                              ? "Started"
-                              : slot.timing === "inside_cutoff"
-                                ? "Inside cut-off"
-                                : ""}
+                            : slot.timing
+                              ? TIMING_SHORT[slot.timing]
+                              : ""}
                       </span>
                     </button>
                   </form>
@@ -112,7 +110,8 @@ export default async function MoveBookingPage({ params, searchParams }: { params
                       </span>
                       <span className="block text-sm">
                         Places taken {a.taken + a.held} of {a.capacity}
-                        {a.bookable && a.timing === "inside_cutoff" ? " · inside the online cut-off" : ""}
+                        {a.bookable && a.timing === "inside_cutoff" ? " · inside the cut-off" : ""}
+                        {a.bookable && a.timing === "needs_notice" ? " · needs more notice" : ""}
                         {a.bookable && a.timing === "past" ? " · already started" : ""}
                       </span>
                     </span>

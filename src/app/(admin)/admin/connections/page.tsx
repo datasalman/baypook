@@ -67,7 +67,7 @@ export default async function ConnectionsPage() {
         Settings are environment variables on the server (Vercel, Project settings, Environment Variables). This page only checks whether
         each one is there; it never shows what they contain. Step by step help is in{" "}
         <a href={SETUP_URL} target="_blank" rel="noreferrer">
-          SETUP.md
+          SETUP.md<span className="sr-only"> (opens in a new tab)</span>
         </a>
         .
       </p>
@@ -98,6 +98,7 @@ export default async function ConnectionsPage() {
               <p className="mt-2 text-sm">
                 <a href={SETUP_URL} target="_blank" rel="noreferrer">
                   {row.setupStep}
+                  <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               </p>
             </li>

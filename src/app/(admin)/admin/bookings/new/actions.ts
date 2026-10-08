@@ -34,14 +34,28 @@ export async function searchCustomersAction(q: string): Promise<CustomerHit[]> {
     .map((r) => ({ id: r.id, firstName: r.firstName, lastName: r.lastName, email: hasRealEmail(r.email) ? r.email : "", phone: r.phone }));
 }
 
-export type NewBookingState = { error: string | null };
+/** The free-text fields React would otherwise clear after a failed submit (the rest are controlled). */
+export type NewBookingValues = { birthdayName: string; birthdayAge: string; amount: string; notes: string };
+
+export type NewBookingState = { error: string | null; values?: NewBookingValues };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Create the walk-in or phone booking; used with useActionState so the form keeps its values on error. */
+/**
+ * Create the walk-in or phone booking (used with useActionState). React resets
+ * uncontrolled fields once the action returns, so every error also returns the
+ * typed free-text values for the form to put back.
+ */
 export async function createManualBookingAction(_prev: NewBookingState, fd: FormData): Promise<NewBookingState> {
   const user = await requireUser("/admin/bookings/new");
   const db = await getDb();
+  const values: NewBookingValues = {
+    birthdayName: field(fd, "birthdayName").slice(0, 60),
+    birthdayAge: field(fd, "birthdayAge").slice(0, 3),
+    amount: field(fd, "amount").slice(0, 20),
+    notes: (typeof fd.get("notes") === "string" ? String(fd.get("notes")) : "").slice(0, 5000),
+  };
+  const fail = (error: string): NewBookingState => ({ error, values });
   let target = "";
   let message = "";
   try {
@@ -56,17 +70,17 @@ export async function createManualBookingAction(_prev: NewBookingState, fd: Form
     const phone = field(fd, "phone").slice(0, 40);
     const noEmail = fd.get("noEmail") === "on";
     const email = noEmail ? "" : field(fd, "email").toLowerCase().slice(0, 200);
-    if (!firstName) return { error: "Enter the parent's first name." };
-    if (!noEmail && !email) return { error: "Enter an email for the confirmation, or tick “No email”." };
-    if (email && !EMAIL_RE.test(email)) return { error: "That email does not look right." };
+    if (!firstName) return fail("Enter the parent's first name.");
+    if (!noEmail && !email) return fail("Enter an email for the confirmation, or tick “No email”.");
+    if (email && !EMAIL_RE.test(email)) return fail("That email does not look right.");
 
     const method = field(fd, "payment");
-    if (method !== "cash" && method !== "card_machine" && method !== "pay_in_store") return { error: "Choose how they are paying." };
+    if (method !== "cash" && method !== "card_machine" && method !== "pay_in_store") return fail("Choose how they are paying.");
     const amountRaw = field(fd, "amount");
     let amountPence: number | null = null;
     if (method !== "pay_in_store" && amountRaw) {
       amountPence = amountField(fd, "amount");
-      if (!Number.isInteger(amountPence)) return { error: "Enter the amount taken, for example 34.00, or leave it empty for the full total." };
+      if (!Number.isInteger(amountPence)) return fail("Enter the amount taken, for example 34.00, or leave it empty for the full total.");
     }
 
     const { lines, addOns } = quantitiesFromForm(fd);
@@ -77,7 +91,7 @@ export async function createManualBookingAction(_prev: NewBookingState, fd: Form
     const birthdayName = field(fd, "birthdayName").slice(0, 60);
     const ageRaw = field(fd, "birthdayAge");
     const age = ageRaw ? Number(ageRaw) : null;
-    if (age !== null && (!Number.isInteger(age) || age < 0 || age > 18)) return { error: "Enter the birthday child's age as a number." };
+    if (age !== null && (!Number.isInteger(age) || age < 0 || age > 18)) return fail("Enter the birthday child's age as a number.");
 
     const sendEmail = !noEmail && hasRealEmail(email);
     const booking = await createManualBooking(db, {
@@ -98,7 +112,7 @@ export async function createManualBookingAction(_prev: NewBookingState, fd: Form
     message = `Booking ${booking.reference} made${sendEmail ? `; confirmation sent to ${email}` : ""}`;
   } catch (e) {
     unstable_rethrow(e);
-    return { error: bookingErrorMessage(e) };
+    return fail(bookingErrorMessage(e));
   }
   revalidatePath("/admin", "layout");
   redirect(withFlash(target, message));

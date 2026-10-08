@@ -74,7 +74,7 @@ export default async function ServicePage({ params }: { params: Promise<{ servic
         <Banner className="mb-4">No timetable yet, so there are no sessions. Add times below or fill them from opening hours.</Banner>
       ) : null}
 
-      <nav aria-label="Sections" className="sticky top-0 z-10 -mx-4 mb-4 flex gap-1 overflow-x-auto bg-canvas/95 px-4 py-2 backdrop-blur">
+      <nav aria-label="Sections" className="sticky top-[calc(3.5rem+env(safe-area-inset-top))] z-10 -mx-4 mb-4 flex gap-1 overflow-x-auto bg-canvas/95 px-4 py-2 backdrop-blur">
         {jump.map((j) => (
           <a
             key={j.id}

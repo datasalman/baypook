@@ -2,7 +2,7 @@
  * The three scheduled jobs shown on the Jobs page. Hold expiry lives in
  * `src/server/jobs.ts`. Reminders and retention come from
  * `src/server/jobs-reminders.ts` and `src/server/jobs-retention.ts`, which may
- * not exist yet: they are loaded on demand and the page shows "coming soon"
+ * not exist yet: they are loaded on demand and the page shows "Not available yet"
  * until they do.
  */
 import type { Db } from "@/db";

@@ -35,7 +35,7 @@ export function TimetableSection({
   const typicalCap = rules[0]?.capacity ?? 10;
 
   return (
-    <section id="timetable" className="scroll-mt-16">
+    <section id="timetable" className="scroll-mt-36">
       <SectionTitle aside={`${rules.length} ${rules.length === 1 ? "time" : "times"} a week`}>Timetable</SectionTitle>
       <p className="mb-3 text-sm text-muted">Each cell is the places at that start time. Changes show on the calendar straight away.</p>
 
@@ -67,14 +67,22 @@ export function TimetableSection({
                     const rs = cell(w, t);
                     const limited = rs.some((r) => r.validFrom || r.validTo);
                     return (
-                      <td key={w} className={rs.length ? "px-1 py-2 font-semibold text-ink" : "px-1 py-2 text-muted/60"}>
+                      <td key={w} className={rs.length ? "px-1 py-2 font-semibold text-ink" : "px-1 py-2 text-muted"}>
                         {rs.length ? (
                           <span title={rs.map((r) => `${r.capacity} places ${validity(r)}`.trim()).join("; ")}>
                             {rs.map((r) => r.capacity).join("/")}
-                            {limited ? <sup aria-label="dates limited">*</sup> : null}
+                            {limited ? (
+                              <>
+                                <sup aria-hidden="true">*</sup>
+                                <span className="sr-only"> (only between certain dates)</span>
+                              </>
+                            ) : null}
                           </span>
                         ) : (
-                          <span aria-label="none">·</span>
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="sr-only">None</span>
+                          </>
                         )}
                       </td>
                     );
@@ -87,7 +95,9 @@ export function TimetableSection({
       ) : (
         <EmptyState title="No times yet">Add times below, or fill them from the venue&apos;s opening hours.</EmptyState>
       )}
-      {rules.some((r) => r.validFrom || r.validTo) ? <p className="mt-1 text-sm text-muted">* Only between certain dates.</p> : null}
+      {rules.some((r) => r.validFrom || r.validTo) ? <p className="mt-1 text-sm text-muted">
+          <span aria-hidden="true">* </span>Only between certain dates.
+        </p> : null}
 
       {rules.length ? (
         <details className="mt-3 rounded-2xl border border-line bg-surface p-4">

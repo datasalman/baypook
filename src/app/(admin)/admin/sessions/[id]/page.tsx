@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { fmtDayLong, fmtPence, fmtTime, localDate } from "@/core/time";
 import { canAccessVenue } from "@/server/auth";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Button, Card, EmptyState, PageHeader, SectionTitle, Stat } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, PageHeader, SectionTitle, Stat, plural } from "@/components/ui";
 import { loadSessionDetail } from "../../_lib/schedule";
 
 export const dynamic = "force-dynamic";
@@ -41,26 +41,27 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
         }
       />
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 gap-2 min-[400px]:grid-cols-3">
         <Stat label="Places taken" value={`${taken} of ${session.capacity}`} />
         <Stat label="Being paid for" value={held} hint={held ? "Held while paying" : undefined} />
-        <Stat label="Places left" value={left} />
+        <Stat label="Places left" value={session.status === "cancelled" ? 0 : left} />
       </div>
 
-      {/*
-        Session actions go here (another agent): change capacity for this session,
-        cancel the session, move everyone, print the register.
-      */}
       <section aria-label="Session actions" className="mt-4 flex flex-wrap gap-2">
-        <Button
-          href={`/admin/bookings/new?${new URLSearchParams({ venue: venue.slug, date, session: session.id }).toString()}`}
-          size="lg"
-        >
-          Add a booking to this session
+        {session.status !== "cancelled" ? (
+          <Button
+            href={`/admin/bookings/new?${new URLSearchParams({ venue: venue.slug, date, session: session.id }).toString()}`}
+            size="lg"
+          >
+            Add a booking to this session
+          </Button>
+        ) : null}
+        <Button href={`/admin/catalogue/sessions?${new URLSearchParams({ venue: venue.slug, date }).toString()}`} variant="secondary" size="lg">
+          Change places or cancel
         </Button>
       </section>
 
-      <SectionTitle aside={live.length ? `${live.length} ${live.length === 1 ? "booking" : "bookings"}` : undefined}>Who is coming</SectionTitle>
+      <SectionTitle aside={live.length ? plural(live.length, "booking", "bookings") : undefined}>Who is coming</SectionTitle>
       {live.length ? (
         <ul className="flex flex-col gap-2">
           {live.map((b) => (
@@ -69,7 +70,7 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
                 <div className="min-w-0">
                   <p className="text-base font-bold text-ink">{b.customerName}</p>
                   <p className="text-base">
-                    {b.lines.length ? b.lines.map((l) => `${l.qty} × ${l.name}`).join(", ") : `${b.places} places`}
+                    {b.lines.length ? b.lines.map((l) => `${l.qty} × ${l.name}`).join(", ") : plural(b.places, "place", "places")}
                   </p>
                   <p className="text-sm text-muted">
                     {b.reference}
@@ -85,6 +86,8 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
             </Card>
           ))}
         </ul>
+      ) : session.status === "cancelled" ? (
+        <EmptyState title="No bookings">This session is cancelled, so it cannot be booked.</EmptyState>
       ) : (
         <EmptyState title="No bookings yet">Places are open until the cut-off.</EmptyState>
       )}
@@ -97,7 +100,7 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
               <Card key={b.id} as="li" href={`/admin/bookings/${b.id}`} tone="muted">
                 <div className="flex items-center justify-between gap-2">
                   <span>
-                    <span className="font-semibold text-ink">{b.customerName}</span> · {b.places} places · {b.reference}
+                    <span className="font-semibold text-ink">{b.customerName}</span> · {plural(b.places, "place", "places")} · {b.reference}
                   </span>
                   <Badge status={b.status} />
                 </div>

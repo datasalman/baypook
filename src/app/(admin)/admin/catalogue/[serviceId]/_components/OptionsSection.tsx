@@ -62,7 +62,7 @@ export function OptionsSection({ service: svc, canManage, back }: { service: Ser
   const live = svc.options.filter((o) => !o.archivedAt);
   const archived = svc.options.filter((o) => o.archivedAt);
   return (
-    <section id="options" className="scroll-mt-16">
+    <section id="options" className="scroll-mt-36">
       <SectionTitle aside={isSlot ? "One package per party" : "Each place is one child"}>{isSlot ? "Package" : "Options and prices"}</SectionTitle>
       <ul className="flex flex-col gap-2">
         {live.map((o) => (

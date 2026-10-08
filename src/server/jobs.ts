@@ -3,7 +3,7 @@
  * Cron routes call these through `runJob`; the admin's "Run now" does the same with
  * `triggeredBy: "admin"`.
  */
-import { and, desc, eq, lte, ne } from "drizzle-orm";
+import { and, desc, eq, gte, lt, lte, ne, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { getPaymentProvider } from "@/providers";
@@ -121,12 +121,19 @@ export function runExpireHoldsJob(db: DbOrTx, triggeredBy: JobTrigger, now?: Dat
   return runJob(db, "expire-holds", triggeredBy, () => expireHoldsJob(db, now));
 }
 
-export async function listJobRuns(db: DbOrTx, opts: { limit?: number; job?: string } = {}): Promise<s.JobRun[]> {
+export async function listJobRuns(
+  db: DbOrTx,
+  opts: { limit?: number; job?: string; /** Runs started at or after this instant. */ from?: Date; /** Runs started before this instant (exclusive). */ to?: Date } = {},
+): Promise<s.JobRun[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 500);
+  const where: SQL[] = [];
+  if (opts.job) where.push(eq(s.jobRuns.job, opts.job));
+  if (opts.from) where.push(gte(s.jobRuns.startedAt, opts.from));
+  if (opts.to) where.push(lt(s.jobRuns.startedAt, opts.to));
   return db
     .select()
     .from(s.jobRuns)
-    .where(opts.job ? eq(s.jobRuns.job, opts.job) : undefined)
+    .where(where.length ? and(...where) : undefined)
     .orderBy(desc(s.jobRuns.startedAt))
     .limit(limit);
 }

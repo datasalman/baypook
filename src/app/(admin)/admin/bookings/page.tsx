@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { addDays, endOfLocalDay, fmtDayShort, fmtTime, isValidDateStr, startOfLocalDay } from "@/core/time";
 import { listBookings } from "@/server/bookings";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Button, Card, EmptyState, Field, Input, PageHeader, Select } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Field, Input, PageHeader, Select, plural } from "@/components/ui";
 import { todayIn, type SearchParams } from "../_lib/dates";
 import { STATUS_FILTERS, customerName, statusFilter } from "./_lib/labels";
 
@@ -121,7 +121,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                     <span className="font-semibold">{service.name}</span>
                   </p>
                   <p className="text-base">
-                    {customerName(customer)} · {b.places} {service.kind === "slot" ? "children" : b.places === 1 ? "place" : "places"}
+                    {customerName(customer)} · {service.kind === "slot" ? plural(b.places, "child", "children") : plural(b.places, "place", "places")}
                   </p>
                   <p className="text-sm text-muted">
                     {b.reference}

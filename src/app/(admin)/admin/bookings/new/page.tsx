@@ -12,7 +12,7 @@ import { Badge, Banner, Card, DateNav, EmptyState, PageHeader, SectionTitle } fr
 import { cn } from "@/components/ui/cn";
 import { dateParam, todayIn, type SearchParams } from "../../_lib/dates";
 import { canSeeCustomer } from "../../customers/_lib/customers";
-import { adminSessionChoices, adminSlotChoices, STAFF_REASON } from "../_lib/availability";
+import { adminSessionChoices, adminSlotChoices, STAFF_REASON, TIMING_SENTENCE, TIMING_SHORT } from "../_lib/availability";
 import { editorCatalogue } from "../_lib/catalogue";
 import { hasRealEmail } from "../_lib/labels";
 import { NewBookingForm, type CustomerPrefill } from "./NewBookingForm";
@@ -183,7 +183,7 @@ export default async function NewBookingPage({ searchParams }: { searchParams: S
                     <p>
                       Places taken {a.taken + a.held} of {a.capacity}
                     </p>
-                    {a.bookable && a.timing === "inside_cutoff" ? <p className="text-sm text-muted">Inside the online cut-off</p> : null}
+                    {a.bookable && (a.timing === "inside_cutoff" || a.timing === "needs_notice") ? <p className="text-sm text-muted">{TIMING_SHORT[a.timing]}</p> : null}
                     {a.bookable && a.timing === "past" ? (
                       <p className="text-sm text-muted">{a.endsAt.getTime() <= now.getTime() ? "In the past" : "Already started"}</p>
                     ) : null}
@@ -247,7 +247,7 @@ export default async function NewBookingPage({ searchParams }: { searchParams: S
                     {fmtTime(c.startsAt, tz)}–{fmtTime(c.endsAt, tz)}
                   </span>
                   <span className="block text-sm">
-                    {c.reason ? STAFF_REASON[c.reason] : c.timing === "past" ? "Started" : c.timing === "inside_cutoff" ? "Inside cut-off" : "Free"}
+                    {c.reason ? STAFF_REASON[c.reason] : c.timing ? TIMING_SHORT[c.timing] : "Free"}
                   </span>
                 </>
               );
@@ -284,7 +284,7 @@ export default async function NewBookingPage({ searchParams }: { searchParams: S
       const mine = choices.find((a) => a.sessionId === session.id);
       placesLeft = mine ? mine.remaining : 0;
       if (mine && !mine.bookable && mine.reason) problem = `This session cannot be booked: ${STAFF_REASON[mine.reason].toLowerCase()}.`;
-      if (mine?.timing === "inside_cutoff") timing = "This time is inside the online cut-off: only staff can book it now.";
+      if (mine?.timing === "inside_cutoff" || mine?.timing === "needs_notice") timing = TIMING_SENTENCE[mine.timing];
       if (mine?.timing === "past") timing = "This session has already started.";
       when = session.startsAt;
       summary.push({
@@ -295,8 +295,9 @@ export default async function NewBookingPage({ searchParams }: { searchParams: S
     } else {
       when = startsAt as Date;
       const reason = timingReason(now, when, service);
-      if (reason === "cutoff" || reason === "lead_time") timing = "This time is inside the online notice period: only staff can book it now.";
-      if (reason === "past") timing = "This time has already started.";
+      if (reason === "cutoff") timing = TIMING_SENTENCE.inside_cutoff;
+      if (reason === "lead_time") timing = TIMING_SENTENCE.needs_notice;
+      if (reason === "past") timing = TIMING_SENTENCE.past;
       summary.push({
         label: "When",
         value: `${fmtDayLong(when, tz)} at ${fmtTime(when, tz)}${extra ? ` (with ${timeAddOn?.name ?? "extra time"})` : ""}`,

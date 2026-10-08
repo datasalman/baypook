@@ -5,7 +5,7 @@ import * as s from "@/db/schema";
 import { canManageCatalogue } from "@/server/auth";
 import { listServicesForVenue } from "@/server/catalogue";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Button, Card, EmptyState, Field, Input, PageHeader, SectionTitle, SegmentedControl, Select } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, Field, Input, PageHeader, SectionTitle, FALLBACK_BRAND, SegmentedControl, Select, safeHex } from "@/components/ui";
 import type { SearchParams } from "../_lib/dates";
 import { createServiceAction, moveServiceAction } from "./actions";
 import { fmtMinutes, minutesToHoursField, pickVenue, venueTabs } from "./_lib/venue";
@@ -140,7 +140,7 @@ export default async function CataloguePage({ searchParams }: { searchParams: Se
               />
             </Field>
             <Field label="Name" htmlFor="new-name">
-              <Input id="new-name" name="name" required maxLength={120} placeholder="e.g. Classic Workshops" />
+              <Input id="new-name" name="name" required maxLength={120} placeholder="e.g. Workshop" />
             </Field>
             <Field label="Room" htmlFor="new-room">
               <Select id="new-room" name="roomId" options={rooms.map((r) => ({ value: r.id, label: r.name }))} />
@@ -169,7 +169,7 @@ export default async function CataloguePage({ searchParams }: { searchParams: Se
               </Field>
             </div>
             <Field label="Colour" htmlFor="new-colour" hint="Used on the calendar">
-              <Input id="new-colour" name="colour" type="color" defaultValue="#5bbf3a" className="max-w-32" />
+              <Input id="new-colour" name="colour" type="color" defaultValue={safeHex(ctx.org.brandPrimary, FALLBACK_BRAND)} className="max-w-32" />
             </Field>
             <p className="mb-3 text-sm text-muted">New services start with online booking off, so you can add prices and times first.</p>
             <Button type="submit" block>

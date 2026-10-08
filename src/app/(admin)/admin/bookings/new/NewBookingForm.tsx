@@ -4,7 +4,7 @@ import { useActionState, useCallback, useEffect, useRef, useState, useTransition
 import { useFormStatus } from "react-dom";
 import type { Quote } from "@/core/pricing";
 import { fmtPence } from "@/core/time";
-import { Banner, Button, Checkbox, Field, Input, Textarea } from "@/components/ui";
+import { Banner, Button, Checkbox, Field, Input, Textarea, useSubmitWithoutReset } from "@/components/ui";
 import { QuantitiesEditor, type EditorCatalogue } from "../_components/QuantitiesEditor";
 import { createManualBookingAction, searchCustomersAction, type CustomerHit, type NewBookingState } from "./actions";
 
@@ -48,7 +48,7 @@ function CustomerSearch({ onPick }: { onPick: (c: CustomerHit) => void }) {
 
   return (
     <div className="mb-4">
-      <Field label="Find a customer" htmlFor="customer-search" hint="Phone, email or name. Or type a new customer below.">
+      <Field label="Find a parent" htmlFor="customer-search" hint="Phone, email or name. Or type their details below.">
         <Input
           id="customer-search"
           type="search"
@@ -116,6 +116,11 @@ export function NewBookingForm({
   const [payment, setPayment] = useState<"cash" | "card_machine" | "pay_in_store">("card_machine");
   const isSlot = catalogue.kind === "slot";
   const errorRef = useRef<HTMLDivElement>(null);
+  // Submitting from onSubmit skips React's form reset, so the payment radios and the
+  // "No email" box keep their state. The typed free-text values also come back with an
+  // error, for the no-JavaScript post.
+  const onSubmit = useSubmitWithoutReset(action);
+  const typed = state.values;
 
   useEffect(() => {
     if (state.error) errorRef.current?.focus();
@@ -124,7 +129,7 @@ export function NewBookingForm({
   const set = (k: keyof CustomerPrefill) => (e: ChangeEvent<HTMLInputElement>) => setCustomer((c) => ({ ...c, [k]: e.target.value }));
 
   return (
-    <form action={action}>
+    <form action={action} onSubmit={onSubmit}>
       <input type="hidden" name="venueId" value={venueId} />
       <input type="hidden" name="serviceId" value={serviceId} />
       {sessionId ? <input type="hidden" name="sessionId" value={sessionId} /> : null}
@@ -170,10 +175,10 @@ export function NewBookingForm({
           <h2 className="mb-2 mt-6 text-lg font-bold">Birthday child</h2>
           <div className="grid grid-cols-2 gap-x-3">
             <Field label="First name" htmlFor="birthdayName" optional>
-              <Input id="birthdayName" name="birthdayName" autoComplete="off" maxLength={60} />
+              <Input id="birthdayName" name="birthdayName" autoComplete="off" maxLength={60} defaultValue={typed?.birthdayName} />
             </Field>
             <Field label="Age they are turning" htmlFor="birthdayAge" optional>
-              <Input id="birthdayAge" name="birthdayAge" type="number" inputMode="numeric" min={1} max={18} />
+              <Input id="birthdayAge" name="birthdayAge" type="number" inputMode="numeric" min={1} max={18} defaultValue={typed?.birthdayAge} />
             </Field>
           </div>
         </>
@@ -209,14 +214,14 @@ export function NewBookingForm({
           className="mt-2"
           hint={q ? `Leave empty for the full total, ${fmtPence(q.totalPence)}.` : "Leave empty for the full total."}
         >
-          <Input id="amount" name="amount" inputMode="decimal" autoComplete="off" />
+          <Input id="amount" name="amount" inputMode="decimal" autoComplete="off" defaultValue={typed?.amount} />
         </Field>
       ) : (
         <p className="mb-4 mt-2 text-sm text-muted">{q ? `${fmtPence(q.totalPence)} will show as owed until it is paid in store.` : null}</p>
       )}
 
       <Field label="Notes" htmlFor="notes" optional hint="Allergies, anything the parent said. Staff only.">
-        <Textarea id="notes" name="notes" maxLength={5000} rows={3} />
+        <Textarea id="notes" name="notes" maxLength={5000} rows={3} defaultValue={typed?.notes} />
       </Field>
 
       {state.error ? (

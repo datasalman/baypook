@@ -6,7 +6,7 @@ export const PAYMENT_METHOD_LABEL: Record<s.Booking["paymentMethod"], string> = 
   card_machine: "Card machine in store",
   cash: "Cash",
   pay_in_store: "To pay in store",
-  imported: "Imported from Wix",
+  imported: "Imported",
   none: "None",
 };
 
@@ -20,7 +20,7 @@ export const LEDGER_METHOD_LABEL: Record<s.Payment["method"], string> = {
 export const SOURCE_LABEL: Record<s.Booking["source"], string> = {
   online: "Booked online",
   manual: "Booked by staff",
-  import: "Imported from Wix",
+  import: "Imported",
 };
 
 export const STATUS_FILTERS = [

@@ -60,11 +60,15 @@ export default async function OutboxPage({ searchParams }: { searchParams: Searc
     bookingId = b?.id;
   }
 
-  const filtering = Boolean(template || status);
-  const rows = (
-    await listOutbox(ctx.db, { venueIds, limit: filtering ? 500 : SHOW, search: bookingId ? undefined : q || undefined, bookingId })
-  ).filter((r) => (!template || r.template === template) && (!status || r.status === status));
-  const shown = rows.slice(0, SHOW);
+  const statusFilter = STATUS_OPTIONS.some((o) => o.value && o.value === status) ? (status as s.Notification["status"]) : undefined;
+  const shown = await listOutbox(ctx.db, {
+    venueIds,
+    limit: SHOW,
+    search: bookingId ? undefined : q || undefined,
+    bookingId,
+    template: template || undefined,
+    status: statusFilter,
+  });
 
   const venueName = new Map(ctx.venues.map((v) => [v.id, v.name]));
   const bookingIds = [...new Set(shown.map((r) => r.bookingId).filter((x): x is string => Boolean(x)))];
@@ -205,9 +209,7 @@ export default async function OutboxPage({ searchParams }: { searchParams: Searc
           })}
         </ul>
       )}
-      {rows.length > SHOW || (!filtering && shown.length === SHOW) ? (
-        <p className="mt-3 text-center text-sm text-muted">Showing the newest {SHOW}. Search to find older emails.</p>
-      ) : null}
+      {shown.length === SHOW ? <p className="mt-3 text-center text-sm text-muted">Showing the newest {SHOW}. Search to find older emails.</p> : null}
     </>
   );
 }

@@ -20,3 +20,14 @@ export function relativeDayName(date: string, today: string): string | null {
 }
 
 export type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+/** The first value of a search param, or "". */
+export function oneParam(v: string | string[] | undefined): string {
+  return (Array.isArray(v) ? v[0] : v) ?? "";
+}
+
+/** A valid 'YYYY-MM-DD' from a search param, or "" when missing or not a date. */
+export function optionalDateParam(value: string | string[] | undefined): string {
+  const v = oneParam(value);
+  return v && isValidDateStr(v) ? v : "";
+}

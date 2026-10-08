@@ -45,9 +45,17 @@ export function ConfirmButton({
   const { pending } = useFormStatus();
   const yesRef = useRef<HTMLButtonElement>(null);
 
+  const wasPending = useRef(false);
+
   useEffect(() => {
     if (asking) yesRef.current?.focus();
   }, [asking]);
+
+  // Back to the first button once a submit finishes without leaving the page (an error was shown).
+  useEffect(() => {
+    if (wasPending.current && !pending) setAsking(false);
+    wasPending.current = pending;
+  }, [pending]);
 
   if (!asking) {
     return (

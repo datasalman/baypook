@@ -3,7 +3,7 @@
  * live, the demo adapter otherwise). The admin is the source of truth; this
  * never throws. Every attempt lands in `calendar_log`, which the admin shows.
  */
-import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lt, or, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { getCalendarProvider } from "@/providers";
@@ -195,7 +195,17 @@ export async function syncBookingToCalendar(
 /** The Calendar log, newest first. `venueIds: null/undefined` = every venue. */
 export async function listCalendarLog(
   db: DbOrTx,
-  opts: { venueIds?: string[] | null; limit?: number; bookingId?: string } = {},
+  opts: {
+    venueIds?: string[] | null;
+    limit?: number;
+    bookingId?: string;
+    /** Case-insensitive match on the booking reference or the calendar event id. */
+    search?: string;
+    /** Rows created at or after this instant. */
+    from?: Date;
+    /** Rows created before this instant (exclusive). */
+    to?: Date;
+  } = {},
 ): Promise<s.CalendarLogRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
   const where: SQL[] = [];
@@ -204,6 +214,17 @@ export async function listCalendarLog(
     where.push(inArray(s.calendarLog.venueId, opts.venueIds));
   }
   if (opts.bookingId) where.push(eq(s.calendarLog.bookingId, opts.bookingId));
+  const q = opts.search?.trim();
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const cond = or(
+      ilike(s.calendarLog.providerEventId, like),
+      inArray(s.calendarLog.bookingId, db.select({ id: s.bookings.id }).from(s.bookings).where(ilike(s.bookings.reference, like))),
+    );
+    if (cond) where.push(cond);
+  }
+  if (opts.from) where.push(gte(s.calendarLog.createdAt, opts.from));
+  if (opts.to) where.push(lt(s.calendarLog.createdAt, opts.to));
   return db
     .select()
     .from(s.calendarLog)

@@ -6,6 +6,7 @@ import { roleAt } from "@/server/auth";
 import { listAudit } from "@/server/audit";
 import { getAdminContext } from "@/server/venue-scope";
 import { Button, EmptyState, Field, Input, PageHeader, Select } from "@/components/ui";
+import { auditActionLabel, humaniseName as humanise } from "../_lib/audit-labels";
 import type { SearchParams } from "../_lib/dates";
 
 export const dynamic = "force-dynamic";
@@ -24,12 +25,6 @@ function pretty(v: unknown): string {
   } catch {
     return String(v);
   }
-}
-
-/** "booking.cancel" -> "Booking cancel" */
-function humanise(action: string): string {
-  const t = action.replace(/[._]+/g, " ").trim();
-  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 export default async function AuditPage({ searchParams }: { searchParams: SearchParams }) {
@@ -55,11 +50,10 @@ export default async function AuditPage({ searchParams }: { searchParams: Search
 
   const q = one(sp.q).trim().slice(0, 100);
   const type = one(sp.type);
-  const [all, typeRows] = await Promise.all([
-    listAudit(ctx.db, { ...scope, search: q || undefined, limit: type ? 1000 : SHOW }),
+  const [rows, typeRows] = await Promise.all([
+    listAudit(ctx.db, { ...scope, search: q || undefined, entityType: type || undefined, limit: SHOW }),
     ctx.db.selectDistinct({ t: s.auditLog.entityType }).from(s.auditLog).orderBy(asc(s.auditLog.entityType)),
   ]);
-  const rows = (type ? all.filter((r) => r.entityType === type) : all).slice(0, SHOW);
   const venueName = new Map(ctx.venues.map((v) => [v.id, v.name]));
   const filtered = Boolean(q || type);
 
@@ -99,7 +93,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Search
             <li key={r.id} className="rounded-2xl border border-line bg-surface">
               <details>
                 <summary className="flex min-h-14 cursor-pointer list-none flex-col gap-0.5 px-4 py-3 [&::-webkit-details-marker]:hidden">
-                  <span className="font-semibold">{humanise(r.action)}</span>
+                  <span className="font-semibold">{auditActionLabel(r.action)}</span>
                   <span className="text-sm text-muted">
                     {fmtLocal(r.createdAt, "EEE d MMM yyyy, HH:mm", tz)} · {r.actor}
                     {r.venueId ? ` · ${venueName.get(r.venueId) ?? "Other venue"}` : ""}
@@ -109,7 +103,10 @@ export default async function AuditPage({ searchParams }: { searchParams: Search
                     {r.entityId ? ` ${r.entityId}` : ""}
                   </span>
                 </summary>
-                <div className="grid gap-3 border-t border-line p-4 sm:grid-cols-2">
+                <p className="border-t border-line px-4 pt-3 text-sm text-muted">
+                  Recorded as <span className="font-mono">{r.action}</span>
+                </p>
+                <div className="grid gap-3 p-4 sm:grid-cols-2">
                   <div>
                     <p className="mb-1 text-sm font-semibold text-muted">Before</p>
                     <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-canvas p-3 text-sm">{pretty(r.before)}</pre>

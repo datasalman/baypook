@@ -6,8 +6,9 @@ import { fmtDayLong, fmtLocal, fmtPence, fmtTime } from "@/core/time";
 import { canAccessVenue, canRefund } from "@/server/auth";
 import { getBookingDetail } from "@/server/bookings";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Banner, Button, ConfirmButton, EmptyState, Field, Input, PageHeader, SectionTitle, Textarea } from "@/components/ui";
+import { ActionForm, Badge, Banner, Button, ConfirmButton, EmptyState, Field, Input, PageHeader, SectionTitle, Textarea, plural } from "@/components/ui";
 import { withFlash } from "@/components/ui/flash";
+import { auditActionLabel } from "../../_lib/audit-labels";
 import { Disclosure, Facts } from "../_components/Disclosure";
 import {
   LEDGER_METHOD_LABEL,
@@ -142,7 +143,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
           {fmtTime(b.startsAt, tz)}–{fmtTime(b.endsAt, tz)}
         </p>
         <p className="mt-1">
-          {isSlot ? `${b.places} children` : `${b.places} ${b.places === 1 ? "place" : "places"}`}
+          {isSlot ? plural(b.places, "child", "children") : plural(b.places, "place", "places")}
           {b.sessionId ? (
             <>
               {" · "}
@@ -173,7 +174,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
       <section aria-label="Actions" className="mt-4 flex flex-col gap-2">
         {owed > 0 && live ? (
           <Disclosure label="Mark paid in store" variant="primary" open>
-            <form action={markPaidAction}>
+            <ActionForm action={markPaidAction}>
               <Hidden id={b.id} />
               <fieldset className="mb-4">
                 <legend className="mb-2 font-semibold">How did they pay?</legend>
@@ -192,7 +193,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
               <Button type="submit" size="lg" block>
                 Save payment
               </Button>
-            </form>
+            </ActionForm>
           </Disclosure>
         ) : null}
 
@@ -209,7 +210,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
 
         {refundable > 0 && b.status !== "pending" && mayRefund ? (
           <Disclosure label="Give a refund">
-            <form action={refundBookingAction}>
+            <ActionForm action={refundBookingAction}>
               <Hidden id={b.id} />
               <p className="mb-3 text-sm text-muted">
                 Up to {fmtPence(refundable)} can be refunded.{" "}
@@ -224,13 +225,13 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
               <ConfirmButton block size="lg" prompt="Give this refund now? It cannot be undone." confirmLabel="Yes, give the refund">
                 Give the refund
               </ConfirmButton>
-            </form>
+            </ActionForm>
           </Disclosure>
         ) : null}
 
         {b.status === "confirmed" || b.status === "pending" ? (
           <Disclosure label="Cancel booking" variant="secondary">
-            <form action={cancelBookingAction}>
+            <ActionForm action={cancelBookingAction}>
               <Hidden id={b.id} />
               <Field label="Reason" htmlFor="cancel-reason" hint="Shown in the booking history, not sent to the parent.">
                 <Input id="cancel-reason" name="reason" maxLength={500} />
@@ -271,7 +272,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
               >
                 {refundable > 0 && !mayRefund ? "Cancel without refund" : "Cancel booking"}
               </ConfirmButton>
-            </form>
+            </ActionForm>
           </Disclosure>
         ) : null}
 
@@ -336,7 +337,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
           ],
         ]}
       />
-      {customer.notes ? <p className="mt-2 text-sm">Customer note: {customer.notes}</p> : null}
+      {customer.notes ? <p className="mt-2 text-sm">Note about this parent: {customer.notes}</p> : null}
 
       {/* ---------- what was booked ---------- */}
       <SectionTitle>What was booked</SectionTitle>
@@ -346,7 +347,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
             <li key={l.optionId} className="flex justify-between gap-2">
               <span>
                 {l.qty} × {l.name}
-                {l.includedChildren ? <span className="text-muted"> (includes {l.includedChildren} children)</span> : null}
+                {l.includedChildren ? <span className="text-muted"> (includes {plural(l.includedChildren, "child", "children")})</span> : null}
               </span>
               <span className="tabular-nums">{fmtPence(l.totalPence)}</span>
             </li>
@@ -455,14 +456,6 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
       ) : (
         <p className="text-sm text-muted">No emails yet.</p>
       )}
-      {(live || b.status === "no_show") && realEmail ? (
-        <form action={resendConfirmationAction} className="mt-2">
-          <Hidden id={b.id} />
-          <Button type="submit" variant="ghost">
-            Resend confirmation
-          </Button>
-        </form>
-      ) : null}
 
       <h3 className="mb-1 mt-4 font-semibold">Calendar</h3>
       {calendarLog.length ? (
@@ -487,7 +480,7 @@ export default async function BookingPage({ params }: { params: Promise<{ id: st
         <ul className="divide-y divide-line rounded-2xl border border-line bg-surface">
           {auditRows.map((a) => (
             <li key={a.id} className="px-4 py-3">
-              <p className="font-semibold">{humaniseAction(a.action)}</p>
+              <p className="font-semibold">{auditActionLabel(a.action)}</p>
               <p className="text-sm text-muted">
                 {fmtLocal(a.createdAt, "d MMM yyyy, HH:mm", tz)} · {a.actor}
               </p>

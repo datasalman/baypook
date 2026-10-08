@@ -98,6 +98,8 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
     return { ...initialLines };
   });
   const [addOns, setAddOns] = useState<Record<string, number>>({ ...initialAddOns });
+  // "Choose at least one place" only after someone has changed something, not on arrival.
+  const [touched, setTouched] = useState(false);
 
   const result = useMemo((): { q: Quote | null; error: string | null } => {
     try {
@@ -128,6 +130,7 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
   }, [result.q, onQuote]);
 
   const placesNow = Object.values(lines).reduce((n, v) => n + v, 0);
+  const nothingChosen = !result.q && placesNow === 0;
   const sessionCap = Math.min(catalogue.maxPlacesPerBooking, placesLeft ?? Number.POSITIVE_INFINITY);
 
   return (
@@ -151,7 +154,10 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
                     name="package"
                     className="mt-1 h-5 w-5 accent-[var(--brand-strong)]"
                     checked={checked}
-                    onChange={() => setLines({ [o.id]: 1 })}
+                    onChange={() => {
+                      setTouched(true);
+                      setLines({ [o.id]: 1 });
+                    }}
                   />
                   <span>
                     <span className="block font-semibold">
@@ -177,7 +183,10 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
                 hint={o.inStoreNoteShort ?? o.blurb}
                 value={v}
                 max={Math.min(v + Math.max(roomLeft, 0), o.maxPerBooking ?? Number.POSITIVE_INFINITY)}
-                onChange={(n) => setLines((cur) => ({ ...cur, [o.id]: n }))}
+                onChange={(n) => {
+                  setTouched(true);
+                  setLines((cur) => ({ ...cur, [o.id]: n }));
+                }}
               />
             );
           })}
@@ -196,7 +205,10 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
                 hint={a.kind === "time" ? `Adds ${a.extraMinutes} minutes` : a.blurb}
                 value={addOns[a.id] ?? 0}
                 max={a.maxQuantity}
-                onChange={(n) => setAddOns((cur) => ({ ...cur, [a.id]: n }))}
+                onChange={(n) => {
+                  setTouched(true);
+                  setAddOns((cur) => ({ ...cur, [a.id]: n }));
+                }}
               />
             ))}
           </div>
@@ -210,7 +222,7 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
         <input key={a.id} type="hidden" name={`addon:${a.id}`} value={addOns[a.id] ?? 0} />
       ))}
 
-      <div className="rounded-2xl border border-line bg-surface p-4" aria-live="polite">
+      <div className="rounded-2xl border border-line bg-surface p-4">
         {result.q ? (
           <>
             <ul className="mb-2 space-y-1 text-sm">
@@ -223,7 +235,7 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
                 </li>
               ))}
             </ul>
-            <p className="flex items-baseline justify-between border-t border-line pt-2">
+            <p className="flex items-baseline justify-between border-t border-line pt-2" aria-live="polite">
               <span className="text-lg font-semibold">
                 Total{isSlot ? ` (${result.q.places} children)` : ` (${result.q.places} ${result.q.places === 1 ? "place" : "places"})`}
               </span>
@@ -237,11 +249,19 @@ export function QuantitiesEditor({ catalogue, initialLines = {}, initialAddOns =
               </ul>
             ) : null}
           </>
+        ) : nothingChosen ? (
+          touched ? null : (
+            <p className="text-muted">The total shows here once you add places.</p>
+          )
         ) : (
           <p role="alert" className="font-semibold text-danger">
-            {result.error ?? "Choose at least one place."}
+            {result.error ?? "Check the places and extras."}
           </p>
         )}
+        {/* Always in the page so screen readers announce it when it fills in. */}
+        <p role="status" className="font-semibold empty:hidden">
+          {touched && nothingChosen ? "Choose at least one place." : null}
+        </p>
       </div>
     </div>
   );

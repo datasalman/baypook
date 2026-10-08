@@ -6,7 +6,7 @@ import { WEEKDAY_KEYS, localDate, localTime } from "@/core/time";
 import { isUuid } from "@/server/catalogue";
 import { roleAt } from "@/server/auth";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Banner, Button, Checkbox, ConfirmButton, Field, Input, PageHeader, SectionTitle, Select, Textarea } from "@/components/ui";
+import { ActionForm, Badge, Banner, Button, Checkbox, ConfirmButton, Field, Input, PageHeader, SectionTitle, Select, Textarea } from "@/components/ui";
 import { addRoomAction, deleteRoomAction, renameRoomAction, saveVenueAction } from "../../actions";
 import { minutesToHoursField, WEEKDAY_LONG, WEEKDAY_ORDER } from "../../../catalogue/_lib/venue";
 
@@ -45,7 +45,7 @@ export default async function VenueSettingsPage({ params }: { params: Promise<{ 
       />
       {!venue.openingHoursConfirmed ? <Banner className="mb-4">The opening hours are placeholders. Check them, tick Confirmed and save.</Banner> : null}
 
-      <form action={saveVenueAction} className="rounded-2xl border border-line bg-surface p-4">
+      <ActionForm action={saveVenueAction} className="rounded-2xl border border-line bg-surface p-4">
         <input type="hidden" name="venueId" value={venue.id} />
         <input type="hidden" name="back" value={back} />
         <fieldset disabled={!canEdit} className="min-w-0">
@@ -108,7 +108,9 @@ export default async function VenueSettingsPage({ params }: { params: Promise<{ 
                   <span className="w-24 font-semibold">{WEEKDAY_LONG[w]}</span>
                   <label className="flex min-h-11 items-center gap-2 text-sm">
                     <input type="checkbox" name={`${key}.closed`} defaultChecked={!h} className="h-5 w-5 accent-[var(--brand-strong)]" />
-                    Closed
+                    <span>
+                      <span className="sr-only">{WEEKDAY_LONG[w]} </span>Closed
+                    </span>
                   </label>
                   <label className="sr-only" htmlFor={`v-${key}-open`}>
                     {WEEKDAY_LONG[w]} opens
@@ -155,7 +157,7 @@ export default async function VenueSettingsPage({ params }: { params: Promise<{ 
             </Button>
           ) : null}
         </fieldset>
-      </form>
+      </ActionForm>
 
       <section id="rooms" className="scroll-mt-16">
         <SectionTitle>Rooms</SectionTitle>

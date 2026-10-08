@@ -101,12 +101,24 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Online" value={fmtPence(takings.totals.onlinePence)} />
-        <Stat label="In store" value={fmtPence(takings.totals.inStorePence)} hint="Cash and card machine" />
+        <Stat
+          label="In store"
+          value={fmtPence(takings.totals.inStorePence)}
+          hint={`Cash ${fmtPence(takings.totals.cashPence)}, card machine ${fmtPence(takings.totals.cardMachinePence)}`}
+        />
         <Stat label="Refunds" value={fmtPence(takings.totals.refundsPence)} />
         <Stat label="Net" value={fmtPence(takings.totals.netPence)} />
       </div>
 
-      <SectionTitle aside={<a href={exportHref("takings", true)} download>Download CSV</a>}>Takings by day</SectionTitle>
+      <SectionTitle
+        aside={
+          <a href={exportHref("takings", true)} download className="inline-flex min-h-11 items-center">
+            Download CSV
+          </a>
+        }
+      >
+        Takings by day
+      </SectionTitle>
       {takings.rows.length ? (
         <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
           <table className="w-full border-collapse text-base">
@@ -142,8 +154,13 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
                   </th>
                   {many ? <td className={td}>{r.venueName}</td> : null}
                   <td className={cn(td, "text-right")}>{fmtPence(r.onlinePence)}</td>
-                  <td className={cn(td, "text-right")} title={`Cash ${fmtPence(r.cashPence)}, card machine ${fmtPence(r.cardMachinePence)}`}>
+                  <td className={cn(td, "text-right")}>
                     {fmtPence(r.inStorePence)}
+                    {r.inStorePence ? (
+                      <span className="block text-sm font-normal text-muted">
+                        Cash {fmtPence(r.cashPence)}, card machine {fmtPence(r.cardMachinePence)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className={cn(td, "text-right")}>{r.refundsPence ? `-${fmtPence(r.refundsPence)}` : fmtPence(0)}</td>
                   <td className={cn(td, "text-right font-semibold")}>{fmtPence(r.netPence)}</td>
@@ -156,7 +173,14 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
                   Total
                 </th>
                 <td className={cn(td, "text-right")}>{fmtPence(takings.totals.onlinePence)}</td>
-                <td className={cn(td, "text-right")}>{fmtPence(takings.totals.inStorePence)}</td>
+                <td className={cn(td, "text-right")}>
+                  {fmtPence(takings.totals.inStorePence)}
+                  {takings.totals.inStorePence ? (
+                    <span className="block text-sm font-normal text-muted">
+                      Cash {fmtPence(takings.totals.cashPence)}, card machine {fmtPence(takings.totals.cardMachinePence)}
+                    </span>
+                  ) : null}
+                </td>
                 <td className={cn(td, "text-right")}>
                   {takings.totals.refundsPence ? `-${fmtPence(takings.totals.refundsPence)}` : fmtPence(0)}
                 </td>

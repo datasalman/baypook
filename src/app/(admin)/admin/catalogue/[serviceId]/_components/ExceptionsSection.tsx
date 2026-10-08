@@ -25,7 +25,7 @@ export function ExceptionsSection({
   back: string;
 }) {
   return (
-    <section id="changes" className="scroll-mt-16">
+    <section id="changes" className="scroll-mt-36">
       <SectionTitle>One-off changes</SectionTitle>
       <p className="mb-3 text-sm text-muted">For one day only: cancel, add a session or change the places. The weekly timetable stays as it is.</p>
       {exceptions.length ? (

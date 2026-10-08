@@ -17,7 +17,7 @@ export function DetailsSection({
 }) {
   const isSlot = svc.kind === "slot";
   return (
-    <section id="details" className="scroll-mt-16">
+    <section id="details" className="scroll-mt-36">
       <SectionTitle>Details</SectionTitle>
       <form action={updateServiceAction} className="rounded-2xl border border-line bg-surface p-4">
         <input type="hidden" name="serviceId" value={svc.id} />

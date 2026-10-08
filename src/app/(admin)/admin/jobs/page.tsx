@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
-import { fmtLocal } from "@/core/time";
+import { endOfLocalDay, fmtLocal, startOfLocalDay } from "@/core/time";
 import type * as s from "@/db/schema";
 import { isDemo } from "@/lib/env";
 import { listJobRuns } from "@/server/jobs";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Banner, Button, EmptyState, PageHeader, SectionTitle } from "@/components/ui";
+import { Badge, Banner, Button, EmptyState, Field, Input, PageHeader, SectionTitle, Select } from "@/components/ui";
+import { oneParam, optionalDateParam, type SearchParams } from "../_lib/dates";
 import { JOBS, availableJobs } from "./registry";
 import { runJobAction } from "./actions";
 
@@ -36,12 +37,24 @@ function summaryText(summary: unknown): string {
   return parts.join(" · ");
 }
 
-export default async function JobsPage() {
+const SHOW = 50;
+
+export default async function JobsPage({ searchParams }: { searchParams: SearchParams }) {
   const ctx = await getAdminContext();
+  const sp = await searchParams;
   const tz = ctx.org.timezone;
   const canRun = ctx.user.isOwner || ctx.user.venues.some((v) => v.role === "manager");
+  const jobParam = oneParam(sp.job);
+  const job = JOBS.some((j) => j.key === jobParam) ? jobParam : "";
+  const date = optionalDateParam(sp.date);
+  const filtered = Boolean(job || date);
   const [runs, available, ...lastRuns] = await Promise.all([
-    listJobRuns(ctx.db, { limit: 50 }),
+    listJobRuns(ctx.db, {
+      limit: SHOW,
+      job: job || undefined,
+      from: date ? startOfLocalDay(date, tz) : undefined,
+      to: date ? endOfLocalDay(date, tz) : undefined,
+    }),
     availableJobs(),
     ...JOBS.map((j) => listJobRuns(ctx.db, { job: j.key, limit: 1 })),
   ]);
@@ -80,9 +93,7 @@ export default async function JobsPage() {
               {last?.error ? <p className="mt-1 break-words text-sm font-semibold text-danger">{last.error}</p> : null}
               <div className="mt-3">
                 {!ready ? (
-                  <Button disabled variant="secondary">
-                    Run now (coming soon)
-                  </Button>
+                  <p className="text-sm text-muted">Not available yet</p>
                 ) : canRun ? (
                   <form action={runJobAction}>
                     <input type="hidden" name="job" value={job.key} />
@@ -99,9 +110,32 @@ export default async function JobsPage() {
         })}
       </div>
 
-      <SectionTitle aside="Newest first">Last 50 runs</SectionTitle>
+      <SectionTitle aside="Newest first">{filtered ? "Runs" : `Last ${SHOW} runs`}</SectionTitle>
+      <form method="get" action="/admin/jobs" className="mb-3 rounded-2xl border border-line bg-surface p-3">
+        <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+          <Field label="Job" htmlFor="job">
+            <Select
+              id="job"
+              name="job"
+              defaultValue={job}
+              options={[{ value: "", label: "Every job" }, ...JOBS.map((j) => ({ value: j.key as string, label: j.title }))]}
+            />
+          </Field>
+          <Field label="Day" htmlFor="date" optional>
+            <Input id="date" name="date" type="date" defaultValue={date} />
+          </Field>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit">Show</Button>
+          {filtered ? (
+            <Button href="/admin/jobs" variant="ghost">
+              Clear
+            </Button>
+          ) : null}
+        </div>
+      </form>
       {runs.length === 0 ? (
-        <EmptyState title="No runs yet" />
+        <EmptyState title={filtered ? "No runs match" : "No runs yet"} />
       ) : (
         <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
           {runs.map((r) => (
@@ -120,6 +154,7 @@ export default async function JobsPage() {
           ))}
         </ul>
       )}
+      {runs.length === SHOW ? <p className="mt-3 text-center text-sm text-muted">Showing the newest {SHOW}. Pick a job or a day to find older runs.</p> : null}
     </>
   );
 }

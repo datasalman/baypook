@@ -20,12 +20,14 @@ import {
   updateOrganisation,
   updateVenue,
 } from "@/server/settings";
-import { backPath, bool, hoursToMinutes, num, runAdminAction, str } from "../catalogue/_lib/form";
+import type { FormActionState } from "@/components/ui/form-state";
+import { backPath, bool, hoursToMinutes, num, runAdminAction, runAdminFormAction, str } from "../catalogue/_lib/form";
 
 // ---------- organisation ----------
 
-export async function saveOrganisationAction(fd: FormData): Promise<void> {
-  await runAdminAction(backPath(fd, "/admin/settings"), async ({ db, user }) => {
+/** Used with <ActionForm>: an error keeps everything typed. */
+export async function saveOrganisationAction(_prev: FormActionState, fd: FormData): Promise<FormActionState> {
+  return runAdminFormAction(backPath(fd, "/admin/settings"), async ({ db, user }) => {
     await updateOrganisation(
       db,
       user,
@@ -73,9 +75,10 @@ function hoursFrom(fd: FormData): OpeningHours {
   return out;
 }
 
-export async function saveVenueAction(fd: FormData): Promise<void> {
+/** Used with <ActionForm>: an error keeps everything typed. */
+export async function saveVenueAction(_prev: FormActionState, fd: FormData): Promise<FormActionState> {
   const venueId = str(fd, "venueId") ?? "";
-  await runAdminAction(backPath(fd, `/admin/settings/venues/${venueId}`), async ({ db, user }) => {
+  return runAdminFormAction(backPath(fd, `/admin/settings/venues/${venueId}`), async ({ db, user }) => {
     const org = await getOrganisation(db);
     const opensDate = str(fd, "opensAtDate")?.trim();
     const opensTime = str(fd, "opensAtTime")?.trim() || "10:00";

@@ -2,11 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { inArray } from "drizzle-orm";
 import * as s from "@/db/schema";
-import { fmtLocal } from "@/core/time";
+import { endOfLocalDay, fmtLocal, startOfLocalDay } from "@/core/time";
 import { isDemo } from "@/lib/env";
 import { listCalendarLog } from "@/server/calendar";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Banner, Button, EmptyState, PageHeader } from "@/components/ui";
+import { Badge, Banner, Button, EmptyState, Field, Input, PageHeader } from "@/components/ui";
+import { oneParam, optionalDateParam, type SearchParams } from "../_lib/dates";
 import { retryCalendar } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -20,11 +21,22 @@ const ACTION_LABEL: Record<s.CalendarLogRow["action"], string> = {
 
 const SHOW = 200;
 
-export default async function CalendarLogPage() {
+export default async function CalendarLogPage({ searchParams }: { searchParams: SearchParams }) {
   const ctx = await getAdminContext();
+  const sp = await searchParams;
   const tz = ctx.org.timezone;
+  const q = oneParam(sp.q).trim().slice(0, 100);
+  const from = optionalDateParam(sp.from);
+  const to = optionalDateParam(sp.to);
   const venueIds = ctx.user.isOwner && ctx.selectedVenueId === "all" ? null : ctx.selectedVenues.map((v) => v.id);
-  const rows = await listCalendarLog(ctx.db, { venueIds, limit: SHOW });
+  const rows = await listCalendarLog(ctx.db, {
+    venueIds,
+    limit: SHOW,
+    search: q || undefined,
+    from: from ? startOfLocalDay(from, tz) : undefined,
+    to: to ? endOfLocalDay(to, tz) : undefined,
+  });
+  const filtered = Boolean(q || from || to);
 
   const bookingIds = [...new Set(rows.map((r) => r.bookingId).filter((x): x is string => Boolean(x)))];
   const refs = bookingIds.length
@@ -42,8 +54,34 @@ export default async function CalendarLogPage() {
         </Banner>
       ) : null}
 
+      <form method="get" action="/admin/calendar-log" className="mb-4 rounded-2xl border border-line bg-surface p-3">
+        <Field label="Search" htmlFor="q" hint="Booking reference or calendar event id">
+          <Input id="q" name="q" type="search" defaultValue={q} placeholder="e.g. BP-7K3M2" />
+        </Field>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="From" htmlFor="from" optional>
+            <Input id="from" name="from" type="date" defaultValue={from} />
+          </Field>
+          <Field label="To" htmlFor="to" optional>
+            <Input id="to" name="to" type="date" defaultValue={to} />
+          </Field>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit">Show</Button>
+          {filtered ? (
+            <Button href="/admin/calendar-log" variant="ghost">
+              Clear
+            </Button>
+          ) : null}
+        </div>
+      </form>
+
       {rows.length === 0 ? (
-        <EmptyState title="Nothing pushed yet">Confirmed bookings, changes and cancellations show up here.</EmptyState>
+        filtered ? (
+          <EmptyState title="Nothing matches">Try another reference or a wider date range.</EmptyState>
+        ) : (
+          <EmptyState title="Nothing pushed yet">Confirmed bookings, changes and cancellations show up here.</EmptyState>
+        )
       ) : (
         <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
           {rows.map((r) => {
@@ -86,7 +124,7 @@ export default async function CalendarLogPage() {
           })}
         </ul>
       )}
-      {rows.length === SHOW ? <p className="mt-3 text-center text-sm text-muted">Showing the newest {SHOW}.</p> : null}
+      {rows.length === SHOW ? <p className="mt-3 text-center text-sm text-muted">Showing the newest {SHOW}. Search or pick dates to find older entries.</p> : null}
     </>
   );
 }

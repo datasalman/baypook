@@ -4,7 +4,7 @@ import { roleAt } from "@/server/auth";
 import { listServicesForVenue } from "@/server/catalogue";
 import { TIMEZONES } from "@/server/settings";
 import { getAdminContext } from "@/server/venue-scope";
-import { Badge, Button, Card, EmptyState, Field, Input, PageHeader, SectionTitle, Select, Textarea } from "@/components/ui";
+import { ActionForm, Badge, Button, Card, EmptyState, Field, Input, PageHeader, SectionTitle, Select, Textarea } from "@/components/ui";
 import { createVenueAction, saveOrganisationAction } from "./actions";
 import { BrandColours } from "./_components/BrandColours";
 import { fmtMinutes } from "../catalogue/_lib/venue";
@@ -38,11 +38,13 @@ export default async function SettingsPage() {
         Placeholder: please confirm
       </Badge>
     ) : null;
-  const confirmBox = (key: string) =>
+  const confirmBox = (key: string, fieldName: string) =>
     pending.has(key) ? (
       <label className="-mt-2 mb-4 flex min-h-11 items-center gap-2 text-sm">
         <input type="checkbox" name="confirm" value={key} className="h-5 w-5 accent-[var(--brand-strong)]" />
-        This is correct
+        <span>
+          <span className="sr-only">{fieldName}: </span>This is correct
+        </span>
       </label>
     ) : null;
   const timezones: string[] = TIMEZONES.includes(org.timezone as (typeof TIMEZONES)[number]) ? [...TIMEZONES] : [org.timezone, ...TIMEZONES];
@@ -63,9 +65,9 @@ export default async function SettingsPage() {
       <div className="flex flex-col gap-2">
         {servicesByVenue.map(({ venue, services }) => (
           <Card key={venue.id}>
-            <div className="mb-2 flex items-baseline justify-between gap-2">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2">
               <span className="text-lg font-bold">{venue.name}</span>
-              <Link href={`/admin/settings/venues/${venue.id}`} className="text-sm font-semibold">
+              <Link href={`/admin/settings/venues/${venue.id}`} className="inline-flex min-h-11 items-center text-sm font-semibold">
                 Up to {venue.maxPlacesPerBooking} places per booking ›
               </Link>
             </div>
@@ -136,7 +138,7 @@ export default async function SettingsPage() {
           </div>
 
           <SectionTitle>Organisation</SectionTitle>
-          <form action={saveOrganisationAction} className="rounded-2xl border border-line bg-surface p-4">
+          <ActionForm action={saveOrganisationAction} className="rounded-2xl border border-line bg-surface p-4">
             <input type="hidden" name="back" value="/admin/settings" />
             <Field label={<>Business name {tag("name")}</>} htmlFor="org-name">
               <Input id="org-name" name="name" defaultValue={org.name} required maxLength={120} />
@@ -149,15 +151,15 @@ export default async function SettingsPage() {
             <Field label={<>Legal name {tag("legalName")}</>} htmlFor="org-legal-name" optional>
               <Input id="org-legal-name" name="legalName" defaultValue={org.legalName ?? ""} maxLength={200} />
             </Field>
-            {confirmBox("legalName")}
+            {confirmBox("legalName", "Legal name")}
             <Field label={<>Registered address {tag("legalAddress")}</>} htmlFor="org-legal-address" optional>
               <Textarea id="org-legal-address" name="legalAddress" defaultValue={org.legalAddress ?? ""} rows={3} maxLength={500} />
             </Field>
-            {confirmBox("legalAddress")}
+            {confirmBox("legalAddress", "Registered address")}
             <Field label={<>Company number {tag("companyNumber")}</>} htmlFor="org-company" optional>
               <Input id="org-company" name="companyNumber" defaultValue={org.companyNumber ?? ""} maxLength={100} />
             </Field>
-            {confirmBox("companyNumber")}
+            {confirmBox("companyNumber", "Company number")}
 
             <h3 className="mb-2 mt-2 font-bold">Contact</h3>
             <Field label={<>Contact email {tag("contactEmail")}</>} htmlFor="org-email" hint="Customers reply to this address.">
@@ -185,7 +187,7 @@ export default async function SettingsPage() {
             <Field label={<>Time zone {tag("timezone")}</>} htmlFor="org-tz" hint="Every time and day is worked out in this zone.">
               <Select id="org-tz" name="timezone" defaultValue={org.timezone} options={timezones.map((z) => ({ value: z, label: z.replace("_", " ") }))} />
             </Field>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-3">
               <Field label="Hold while paying (min)" htmlFor="org-hold">
                 <Input id="org-hold" name="holdMinutes" type="number" inputMode="numeric" min={5} max={60} defaultValue={org.holdMinutes} required />
               </Field>
@@ -200,7 +202,7 @@ export default async function SettingsPage() {
             <Button type="submit" block>
               Save organisation
             </Button>
-          </form>
+          </ActionForm>
         </>
       ) : null}
     </>

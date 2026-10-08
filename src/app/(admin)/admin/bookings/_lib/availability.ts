@@ -2,7 +2,8 @@
  * Availability as staff see it: capacity and room rules apply, lead time and
  * cut-off do not (staff may book or move at short notice), and a booking being
  * moved does not count against itself. Each choice also says whether it is
- * inside the online cut-off, so the screen can say so.
+ * inside the cut-off or needs more notice than online booking allows, so the
+ * screen can say so.
  */
 import type { DbOrTx } from "@/db";
 import type * as s from "@/db/schema";
@@ -19,7 +20,8 @@ import { loadWindowState, toServiceRules, toVenueRules } from "@/server/availabi
 import { ensureSessions, ensureVenueSessions } from "@/server/sessions";
 import type { ServiceWithCatalogue } from "@/server/catalogue";
 
-export type Timing = "past" | "inside_cutoff" | null;
+/** Why parents could not book this online right now (staff still can). */
+export type Timing = "past" | "inside_cutoff" | "needs_notice" | null;
 
 export type AdminSessionChoice = SessionAvailability & { timing: Timing };
 export type AdminSlotChoice = SlotStart & { timing: Timing };
@@ -27,7 +29,8 @@ export type AdminSlotChoice = SlotStart & { timing: Timing };
 function timingOf(now: Date, startsAt: Date, service: s.Service): Timing {
   const r = timingReason(now, startsAt, service);
   if (r === "past") return "past";
-  if (r === "cutoff" || r === "lead_time") return "inside_cutoff";
+  if (r === "cutoff") return "inside_cutoff";
+  if (r === "lead_time") return "needs_notice";
   return null;
 }
 
@@ -97,6 +100,20 @@ export async function adminSlotChoices(
   });
   return list.map((a) => ({ ...a, timing: timingOf(now, a.startsAt, service) }));
 }
+
+/** Short words for a time parents cannot book online but staff can. */
+export const TIMING_SHORT: Record<Exclude<Timing, null>, string> = {
+  past: "Started",
+  inside_cutoff: "Inside the cut-off",
+  needs_notice: "Needs more notice",
+};
+
+/** A sentence for the last step of a staff booking. */
+export const TIMING_SENTENCE: Record<Exclude<Timing, null>, string> = {
+  past: "This time has already started.",
+  inside_cutoff: "This time is inside the cut-off: parents cannot book it online now, but staff can.",
+  needs_notice: "Needs more notice: parents cannot book this time online yet, but staff can.",
+};
 
 /** Why staff cannot pick a time, in plain words. */
 export const STAFF_REASON: Record<NotBookableReason, string> = {

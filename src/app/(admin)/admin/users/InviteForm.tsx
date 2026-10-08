@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { Banner, Button, Field, Input, Select } from "@/components/ui";
+import { Banner, Button, Field, Input, Select, useSubmitWithoutReset } from "@/components/ui";
 import type { InviteState } from "./actions";
 
 export type InviteFormProps = {
@@ -14,6 +14,10 @@ export function InviteForm({ action, venues }: InviteFormProps) {
   const [role, setRole] = useState("staff");
   // Remount the inputs after a successful invite so the form clears.
   const formKey = state?.ok ? `done-${state.email}` : "form";
+  // Submitting from onSubmit skips React's form reset, so an error keeps what was typed
+  // (the values also come back in the state, for the no-JavaScript post).
+  const onSubmit = useSubmitWithoutReset(formAction);
+  const typed = state && !state.ok ? state.values : undefined;
 
   return (
     <div>
@@ -27,12 +31,12 @@ export function InviteForm({ action, venues }: InviteFormProps) {
           ) : null}
         </Banner>
       ) : null}
-      <form key={formKey} action={formAction}>
+      <form key={formKey} action={formAction} onSubmit={onSubmit}>
         <Field label="Email" htmlFor="invite-email">
-          <Input id="invite-email" name="email" type="email" autoComplete="off" required />
+          <Input id="invite-email" name="email" type="email" autoComplete="off" required defaultValue={typed?.email} />
         </Field>
         <Field label="Name" htmlFor="invite-name">
-          <Input id="invite-name" name="name" autoComplete="off" required maxLength={120} />
+          <Input id="invite-name" name="name" autoComplete="off" required maxLength={120} defaultValue={typed?.name} />
         </Field>
         <Field
           label="Role"
@@ -53,7 +57,7 @@ export function InviteForm({ action, venues }: InviteFormProps) {
         </Field>
         {role !== "owner" ? (
           <Field label="Venue" htmlFor="invite-venue">
-            <Select id="invite-venue" name="venueId" required defaultValue={venues.length === 1 ? venues[0].id : ""}>
+            <Select id="invite-venue" name="venueId" required defaultValue={typed?.venueId || (venues.length === 1 ? venues[0].id : "")}>
               <option value="" disabled>
                 Choose a venue
               </option>

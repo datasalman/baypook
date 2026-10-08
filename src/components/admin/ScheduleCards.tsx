@@ -1,5 +1,5 @@
 import { fmtTime } from "@/core/time";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, plural } from "@/components/ui";
 import type { BlockItem, PartyItem, ScheduleItem, SessionItem } from "@/app/(admin)/admin/_lib/schedule";
 
 function isFull(i: SessionItem) {
@@ -77,7 +77,7 @@ export function PartyCard({ item, tz, showRoom }: { item: PartyItem; tz: string;
             Birthday: <strong>{child}</strong> ·{" "}
           </>
         ) : null}
-        <span className="tabular-nums">{item.places} children</span>
+        <span className="tabular-nums">{plural(item.places, "child", "children")}</span>
         {showRoom ? <span className="text-muted"> · {item.roomName}</span> : null}
       </p>
       <p className="mt-0.5 text-sm text-muted">

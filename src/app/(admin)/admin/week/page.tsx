@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { addDays, eachLocalDay, fmtLocal, fmtTime, startOfLocalDay } from "@/core/time";
 import { getAdminContext } from "@/server/venue-scope";
-import { Button, DateNav, EmptyState, PageHeader, cn } from "@/components/ui";
+import { Button, DateNav, EmptyState, PageHeader, cn, plural } from "@/components/ui";
 import { dateParam, todayIn, type SearchParams } from "../_lib/dates";
 import { isFull, loadSchedule, mondayOf, type ScheduleItem } from "../_lib/schedule";
 
@@ -35,7 +35,7 @@ function Row({ item, tz, venueName }: { item: ScheduleItem; tz: string; venueNam
             <span className="block font-semibold tabular-nums">{time}</span>
             <span className="block truncate font-semibold">{item.serviceName}</span>
             <span className="block truncate text-muted">
-              {child} · {item.places} children{item.paymentStatus === "owed" ? " · owed" : ""}
+              {child} · {plural(item.places, "child", "children")}{item.paymentStatus === "owed" ? " · owed" : ""}
               {item.status === "pending" ? " · pending" : item.status === "no_show" ? " · no-show" : ""}
             </span>
             {venue}

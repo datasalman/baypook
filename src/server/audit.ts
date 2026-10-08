@@ -2,7 +2,7 @@
  * Audit log: who did what to which record, with before/after snapshots.
  * Every admin action that changes data should call `audit()`.
  */
-import { and, desc, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, or, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import type { CurrentUser } from "./auth";
@@ -52,6 +52,8 @@ export type ListAuditOptions = {
   limit?: number;
   /** Case-insensitive match on actor, action, entity type or entity id. */
   search?: string;
+  /** Only rows for this entity type (e.g. "booking"). */
+  entityType?: string;
 };
 
 export async function listAudit(db: DbOrTx, opts: ListAuditOptions = {}): Promise<s.AuditLogRow[]> {
@@ -75,6 +77,7 @@ export async function listAudit(db: DbOrTx, opts: ListAuditOptions = {}): Promis
     );
     if (cond) where.push(cond);
   }
+  if (opts.entityType) where.push(eq(s.auditLog.entityType, opts.entityType));
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
   return db
     .select()

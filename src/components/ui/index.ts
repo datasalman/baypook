@@ -4,9 +4,10 @@
  *
  * Server-compatible: Button, Card, PageHeader, Field, Input, Select, Textarea,
  * Checkbox, Badge, EmptyState, Stat, Banner, SectionTitle, TopBar.
- * Client: SegmentedControl, ConfirmButton, Toast, FlashToast, DateNav, BottomNav.
+ * Client: SegmentedControl, ConfirmButton, ActionForm, Toast, FlashToast, DateNav, BottomNav.
  */
 export { cn } from "./cn";
+export { plural } from "./plural";
 export { Button, buttonClasses, type ButtonProps, type ButtonVariant, type ButtonSize } from "./Button";
 export { Card, type CardProps, type CardTone } from "./Card";
 export { PageHeader, type PageHeaderProps } from "./PageHeader";
@@ -27,6 +28,7 @@ export { Badge, STATUS_BADGES, type BadgeProps, type BadgeStatus, type BadgeTone
 export { EmptyState, Stat, Banner, SectionTitle, type EmptyStateProps, type StatProps, type BannerProps } from "./Misc";
 export { SegmentedControl, type SegmentedControlProps, type SegmentOption } from "./SegmentedControl";
 export { ConfirmButton, type ConfirmButtonProps } from "./ConfirmButton";
+export { ActionForm, useSubmitWithoutReset, type ActionFormProps, type FormActionState, type FormStateAction } from "./ActionForm";
 export { Toast, FlashToast, type ToastProps } from "./Toast";
 export { withFlash, FLASH_PARAM, FLASH_KIND_PARAM, type FlashKind } from "./flash";
 export { DateNav, type DateNavProps } from "./DateNav";

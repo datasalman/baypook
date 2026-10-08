@@ -8,6 +8,7 @@ import { getDb, type Db } from "@/db";
 import { requireUser, type CurrentUser } from "@/server/auth";
 import { adminErrorMessage, poundsToPence } from "@/server/catalogue-admin";
 import { withFlash, type FlashKind } from "@/components/ui/flash";
+import type { FormActionState } from "@/components/ui/form-state";
 
 export function str(fd: FormData, key: string): string | undefined {
   const v = fd.get(key);
@@ -78,4 +79,32 @@ export async function runAdminAction(
   }
   revalidatePath("/admin", "layout");
   redirect(withFlash(to, message, kind));
+}
+
+/**
+ * Like `runAdminAction`, for forms rendered with `<ActionForm>`: on success it
+ * redirects with a flash; on error it returns `{ error }` so the form stays as
+ * typed (and any open panel stays open) instead of reloading the page.
+ */
+export async function runAdminFormAction(
+  back: string,
+  work: (ctx: { db: Db; user: CurrentUser }) => Promise<string | { message: string; to: string }>,
+): Promise<FormActionState> {
+  const user = await requireUser();
+  const db = await getDb();
+  let message: string;
+  let to = back;
+  try {
+    const r = await work({ db, user });
+    if (typeof r === "string") message = r;
+    else {
+      message = r.message;
+      to = r.to;
+    }
+  } catch (e) {
+    unstable_rethrow(e);
+    return { error: adminErrorMessage(e) };
+  }
+  revalidatePath("/admin", "layout");
+  redirect(withFlash(to, message));
 }

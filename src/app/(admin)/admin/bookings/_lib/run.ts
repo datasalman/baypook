@@ -8,6 +8,7 @@ import { getDb, type Db } from "@/db";
 import { requireUser, type CurrentUser } from "@/server/auth";
 import { poundsToPence } from "@/server/catalogue-admin";
 import { withFlash, type FlashKind } from "@/components/ui/flash";
+import type { FormActionState } from "@/components/ui/form-state";
 import { bookingErrorMessage } from "./errors";
 
 export type ActionResult = string | { message: string; to?: string; kind?: FlashKind };
@@ -33,6 +34,36 @@ export async function runBookingAction(
     unstable_rethrow(e);
     message = bookingErrorMessage(e);
     kind = "error";
+  }
+  revalidatePath("/admin", "layout");
+  redirect(withFlash(to, message, kind));
+}
+
+/**
+ * Like `runBookingAction`, for forms rendered with `<ActionForm>` (the money
+ * panels): success redirects with a flash; an error comes back as `{ error }`
+ * so the panel stays open with the amount and reason as typed.
+ */
+export async function runBookingFormAction(
+  back: string,
+  work: (ctx: { db: Db; user: CurrentUser }) => Promise<ActionResult>,
+): Promise<FormActionState> {
+  const user = await requireUser(back);
+  const db = await getDb();
+  let message: string;
+  let to = back;
+  let kind: FlashKind = "success";
+  try {
+    const r = await work({ db, user });
+    if (typeof r === "string") message = r;
+    else {
+      message = r.message;
+      to = r.to ?? back;
+      kind = r.kind ?? "success";
+    }
+  } catch (e) {
+    unstable_rethrow(e);
+    return { error: bookingErrorMessage(e) };
   }
   revalidatePath("/admin", "layout");
   redirect(withFlash(to, message, kind));

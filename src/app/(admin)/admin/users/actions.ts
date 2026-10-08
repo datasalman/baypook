@@ -10,7 +10,14 @@ import { isDemo } from "@/lib/env";
 
 const BACK = "/admin/users";
 
-export type InviteState = { ok: boolean; message: string; link?: string; email?: string } | null;
+/** `values` comes back on an error so the form can put back what was typed (React clears it otherwise). */
+export type InviteState = {
+  ok: boolean;
+  message: string;
+  link?: string;
+  email?: string;
+  values?: { email: string; name: string; role: string; venueId: string };
+} | null;
 
 function message(e: unknown): string {
   if (e instanceof UsersAdminError) return e.message;
@@ -27,13 +34,14 @@ export async function inviteAction(_prev: InviteState, formData: FormData): Prom
   const by = await requireUser(BACK);
   const role = str(formData, "role");
   const venueId = str(formData, "venueId");
-  if (role !== "owner" && role !== "manager" && role !== "staff") return { ok: false, message: "Choose a role." };
+  const values = { email: str(formData, "email").slice(0, 200), name: str(formData, "name").slice(0, 120), role, venueId };
+  if (role !== "owner" && role !== "manager" && role !== "staff") return { ok: false, message: "Choose a role.", values };
   const isOwner = role === "owner";
   const venues: VenueRoleInput[] = !isOwner && venueId ? [{ venueId, role }] : [];
-  if (!isOwner && !venues.length) return { ok: false, message: "Choose the venue they work at." };
+  if (!isOwner && !venues.length) return { ok: false, message: "Choose the venue they work at.", values };
   try {
     const db = await getDb();
-    const r = await inviteUser(db, { by, email: str(formData, "email"), name: str(formData, "name"), isOwner, venues });
+    const r = await inviteUser(db, { by, email: values.email, name: values.name, isOwner, venues });
     revalidatePath(BACK);
     return {
       ok: true,
@@ -44,7 +52,7 @@ export async function inviteAction(_prev: InviteState, formData: FormData): Prom
       link: r.link,
     };
   } catch (e) {
-    return { ok: false, message: message(e) };
+    return { ok: false, message: message(e), values };
   }
 }
 
