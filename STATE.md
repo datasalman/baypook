@@ -4,7 +4,7 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1, wi
 
 ## Current task
 
-Complete. All four stages done; two review rounds (security, correctness twice, UI) fixed; hardening pass done (shared rate limit, hold cap, idle session timeout). Final verification: `npm run check` green (30 files, 378 tests), Playwright 13/13, `next build` passes. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
+Complete. All four stages done; five review passes fixed (security; correctness rounds 1–3 covering booking flow, catalogue/settings/reports/import/retention; UI copy and accessibility; provider adapters checked against the Stripe, Resend, Google and Vercel docs of 8 Oct 2026); hardening pass done (shared rate limit, hold cap, idle session timeout). Final verification: `npm run check` green (32 files, 406 tests), Playwright 13/13, `next build` passes. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
 
 ## Half-finished
 
@@ -63,7 +63,7 @@ Nothing.
 
 ### Stage 4: hand-over
 - [done] README (demo walkthrough), SETUP, INTEGRATION, DECISIONS (32 entries), `.env.example`, `vercel.json`
-- [done] Security review (no critical/high; mediums fixed; hold hoarding then closed in code with a shared rate limit and a per-client hold cap), correctness review round 1 (16 findings, 24 regression tests) and round 2 (10 findings, 16 tests), UI copy/accessibility review (fixed)
+- [done] Security review (no critical/high; mediums fixed; hold hoarding then closed in code with a shared rate limit and a per-client hold cap), correctness reviews round 1 (16 findings, 24 regression tests), round 2 (10 findings, 16 tests) and round 3 (14 findings on catalogue/settings/reports/import/users, 28 tests), UI copy/accessibility review (fixed), provider-adapter review against vendor docs (refund reconciliation by Stripe refund id, card-only Checkout, Google event ids, Resend idempotency, SETUP corrections)
 - [done] README screenshots (`docs/screenshots/`, regenerate with `SCREENSHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts`)
 - [done] Production build (`next build`) and `next start` in demo mode verified
 - [done] Final report below
@@ -88,7 +88,7 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 
 ### 2. What is missing or stubbed, and why
 
-- **Stripe, Resend and Google have real adapters but were not exercised against real accounts** (no keys in this session). The Stripe adapter follows the Checkout Sessions, Webhooks and Refunds APIs; the first rehearsal must be Stripe test mode (SETUP step 1.6).
+- **Stripe, Resend and Google have real adapters but were not exercised against real accounts** (no keys in this session). Each was reviewed line by line against the vendor docs on 8 Oct 2026 (Stripe SDK 23 / API 2026-09-30.endive, Resend SDK 6, Calendar API v3); the first rehearsal must be a Stripe sandbox with a Snapshot webhook destination (SETUP step 1).
 - **Hold hoarding** is now limited in code (3 live holds per client, shared database rate limits of 10 holds / 10 checkouts / 60 quotes a minute, DECISIONS 27); people behind one shared IP share the cap, and a Vercel WAF rule remains a sensible extra layer (SETUP step 5).
 - **P2 items left as interfaces only:** SMS/WhatsApp (the `notifications.channel` column and `EmailProvider` shape), Stripe Terminal (`PaymentProvider`), waiting list, ICS feed, register view, Stripe Connect.
 - **Google Calendar is one-way**; events are never read back.
@@ -108,7 +108,7 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 
 ### 4. Test results
 
-- `npm run check`: typecheck clean, lint clean, Vitest 30 files / 378 tests passing (about 100 s; the PGlite tests dominate).
+- `npm run check`: typecheck clean, lint clean, Vitest 32 files / 406 tests passing (about 120 s; the PGlite tests dominate).
 - `npm run test:coverage`: `src/core` 99.4% statements, 96.8% branches, 100% functions, 100% lines (thresholds 90/80/90/90).
 - `npm run test:e2e`: Playwright 13/13 across 6 spec files (one worker; about 2.5 min). Needs port 3100 free and `.data/e2e` wiped.
 - `next build`: passes; `next start` in demo mode serves `/api/v1`, `/book`, `/login`.
@@ -116,7 +116,7 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 
 ### 5. Git
 
-Every task was committed and pushed to `https://github.com/datasalman/baypook` on `main`. Pushes succeeded after switching the author to the GitHub noreply email (the first attempt was refused by GitHub's email-privacy setting). Latest code commit before this report: `6b0d7a3`; the commit that adds this report is the final one on `main`.
+Every task was committed and pushed to `https://github.com/datasalman/baypook` on `main`. Pushes succeeded after switching the author to the GitHub noreply email (the first attempt was refused by GitHub's email-privacy setting). Latest code commit before this report: `fff028a`; the commit that adds this report is the final one on `main`.
 
 ### 6. Three things to do next
 
