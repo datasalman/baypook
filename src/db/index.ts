@@ -53,7 +53,11 @@ async function initDemo(): Promise<Db> {
   const db = await openPglite(dir);
   await migratePglite(db);
   const { seedIfEmpty } = await import("./seed");
-  await seedIfEmpty(db);
+  const fresh = await seedIfEmpty(db);
+  if (fresh && process.env.BAYPOOK_DEMO_SAMPLE !== "0") {
+    const { seedDemoBookings } = await import("./demo-data");
+    await seedDemoBookings(db).catch((e) => console.warn("[baypook] sample bookings skipped:", e));
+  }
   return db;
 }
 

@@ -13,6 +13,6 @@ export default defineConfig({
     url: "http://localhost:3100/api/v1/venues",
     timeout: 180_000,
     reuseExistingServer: true,
-    env: { BAYPOOK_MODE: "demo", BAYPOOK_DEMO_DIR: ".data/e2e" },
+    env: { BAYPOOK_MODE: "demo", BAYPOOK_DEMO_DIR: ".data/e2e", BAYPOOK_DEMO_SAMPLE: "0" },
   },
 });
