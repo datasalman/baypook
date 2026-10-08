@@ -281,9 +281,12 @@ export const holds = pgTable(
     status: text("status", { enum: ["active", "converted", "expired", "released"] }).notNull().default("active"),
     checkoutId: text("checkout_id"),
     bookingId: uuid("booking_id"),
+    /** Hashed client IP, so active holds per client can be capped. */
+    clientKey: text("client_key"),
     createdAt: createdAt(),
   },
   (t) => [
+    index("holds_client_idx").on(t.clientKey, t.status),
     index("holds_room_window_idx").on(t.roomId, t.startsAt, t.endsAt),
     index("holds_session_idx").on(t.sessionId),
     index("holds_expires_idx").on(t.status, t.expiresAt),
@@ -544,6 +547,13 @@ export const processedWebhookEvents = pgTable(
   },
   (t) => [primaryKey({ columns: [t.venueId, t.id] })],
 );
+
+/** Fixed-window counters shared across serverless instances (per IP per route per minute). */
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull().default(0),
+  windowStart: ts("window_start").notNull(),
+});
 
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),

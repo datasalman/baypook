@@ -15,6 +15,13 @@
       "when": 1791432773695,
       "tag": "0001_review_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791436146658,
+      "tag": "0002_rate_limits",
+      "breakpoints": true
     }
   ]
 }
