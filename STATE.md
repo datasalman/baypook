@@ -4,29 +4,34 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1. Sp
 
 ## Current task
 
-Stage 0: foundation (schema, db boot, seed, providers, check script).
+Stage 1 wave 1 (parallel subagents): A core rules + holds (`src/core`, `src/server/availability|holds|pricing|catalogue`), B email render + ics + notifications + calendar service, C admin shell + auth + Today/Week.
 
 ## Half-finished
 
-Nothing yet.
+Wave 1 agents running. Contracts: `docs/API.md` (public API), prompts recorded in `docs/agents/` (ownership of files per agent).
 
 ## Next three steps
 
-1. Write Drizzle schema + first migration, PGlite demo boot, seed.
-2. Provider interfaces with demo adapters; `npm run check`; minimal admin listing venues and tomorrow's sessions.
-3. First push; then spawn subagents for core rules, email templates, admin shell.
+1. Integrate wave 1; `npm run check`; commit.
+2. Wave 2: D1 public API + checkout + webhook + bookings service + demo checkout; D2 `/book` reference page; F1 catalogue/settings admin; F2 reports/connections/outbox/jobs/users/audit admin.
+3. Wave 3: E booking actions + manual booking + customers; G crons, import-wix, client.ts, INTEGRATION.md, Playwright.
+
+## Notes for a resumed session
+
+- Push works only with the GitHub noreply author email (`git config user.email` is set per-repo to `163465896+datasalman@users.noreply.github.com`). A stale local branch `main-old-private-email` holds the first attempt; it is safe to delete.
+- `npm run demo` boots PGlite under `.data/demo`; `npm run demo:reset` wipes it.
 
 ## Stage checklist
 
 ### Stage 0: foundation (target: hour 1)
-- [doing] Repo, Next.js 15, Tailwind v4, TypeScript strict
-- [todo] Drizzle schema + first migration
-- [todo] PGlite demo boot (`BAYPOOK_MODE=demo`), Postgres live boot
-- [todo] Seed: Slimedom org, South Woodford, Lakeside, services, options, add-ons, timetable, demo owner
-- [todo] Provider interfaces (payment, email, calendar) + demo adapters
-- [todo] `npm run check` (tsc + eslint + vitest)
-- [todo] Minimal admin: venues + tomorrow's sessions
-- [todo] First push
+- [done] Repo, Next.js 15, Tailwind v4, TypeScript strict
+- [done] Drizzle schema + first migration
+- [done] PGlite demo boot (`BAYPOOK_MODE=demo`), Postgres live boot
+- [done] Seed: Slimedom org, South Woodford, Lakeside, services, options, add-ons, timetable, demo owner
+- [done] Provider interfaces (payment, email, calendar) + demo adapters
+- [done] `npm run check` (tsc + eslint + vitest)
+- [done] Minimal admin: venues + tomorrow's sessions
+- [done] First push
 
 ### Stage 1: booking end to end (target: hour 3)
 - [todo] `src/core`: time, overlap, timetable materialisation, availability (sessions + slot starts), pricing, holds, state machine, tests (≥90% coverage)
