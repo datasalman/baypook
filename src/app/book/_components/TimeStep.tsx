@@ -6,6 +6,28 @@ import type { Availability, Service, SessionAvailability, SlotStart, Venue } fro
 import { formatDay, formatTime } from "../_lib/dates";
 import { BackButton, Button, focusRing, Loading, Notice, StepHeading } from "./ui";
 
+/** What this customer is already holding on this day: availability counts it as taken, but it is theirs. */
+export interface HeldOnDay {
+  sessionId?: string;
+  places: number;
+  startsAt: string;
+  endsAt: string;
+}
+
+/** Give the customer's own held places back to the session they are holding. */
+function withHeldPlaces(s: SessionAvailability, held: HeldOnDay | null): SessionAvailability {
+  if (!held || held.sessionId !== s.id || held.places <= 0) return s;
+  const remaining = Math.min(s.capacity, s.remaining + held.places);
+  if (s.bookable) return { ...s, remaining };
+  return s.reason === "full" ? { ...s, remaining, bookable: true, reason: null } : s;
+}
+
+/** Put the customer's own held party time back in the list (same extras, so it still fits). */
+function withHeldStart(starts: SlotStart[], held: HeldOnDay | null): SlotStart[] {
+  if (!held || held.sessionId || starts.some((s) => s.startsAt === held.startsAt)) return starts;
+  return [...starts, { startsAt: held.startsAt, endsAt: held.endsAt }].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+}
+
 const REASON_LABEL: Record<NonNullable<SessionAvailability["reason"]>, string> = {
   full: "Full",
   cutoff: "Too late to book online",
@@ -23,6 +45,7 @@ export function TimeStep({
   date,
   extraMinutes,
   selectedId,
+  held,
   flash,
   busy,
   onSelectSession,
@@ -37,6 +60,8 @@ export function TimeStep({
   extraMinutes: number;
   /** Session id or slot startsAt currently chosen. */
   selectedId: string | null;
+  /** The customer's own active hold on this day, if any (with unchanged extras for parties). */
+  held: HeldOnDay | null;
   /** A message to show above the times, e.g. "That time has just gone". */
   flash: string | null;
   /** True while a hold is being placed (slots). */
@@ -79,7 +104,9 @@ export function TimeStep({
   } else if (!data) {
     body = <Loading>Finding times…</Loading>;
   } else if (data.kind === "session") {
-    const sessions = (data.days.find((d) => d.date === date)?.sessions ?? []).filter((s) => s.reason !== "past");
+    const sessions = (data.days.find((d) => d.date === date)?.sessions ?? [])
+      .filter((s) => s.reason !== "past")
+      .map((s) => withHeldPlaces(s, held));
     body =
       sessions.length === 0 ? (
         <p className="text-neutral-800">There are no workshops left on this day. Please choose another day.</p>
@@ -114,7 +141,7 @@ export function TimeStep({
         </ul>
       );
   } else {
-    const starts = data.days.find((d) => d.date === date)?.starts ?? [];
+    const starts = withHeldStart(data.days.find((d) => d.date === date)?.starts ?? [], held);
     body =
       starts.length === 0 ? (
         <p className="text-neutral-800">

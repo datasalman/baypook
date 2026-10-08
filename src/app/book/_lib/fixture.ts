@@ -13,6 +13,9 @@
  *   - first name "Cancel"    checkout returns you as if the payment was cancelled
  *   - Decoden Craft Party    allows pay in store (to see the radio)
  *   - weekend workshops      seat 12, so 11 places shows the LIMIT message
+ *   - active holds count against places and party times (like the real API), and
+ *     `DELETE /holds/:id` gives them back, so going back and changing things shows whether
+ *     the page releases its old hold. Each release is logged to the console.
  */
 import { zonedDateTime } from "@/core/time";
 import type {
@@ -250,6 +253,8 @@ function sessionsFor(venue: Venue, service: Service, date: string, now: Date): S
     const seed = hash(`${venue.slug}|${date}|${time}`);
     let remaining = seed % (capacity + 1);
     if (seed % 3 === 0) remaining = capacity;
+    const id = `sess:${venue.slug}:${date}:${time.replace(":", "")}`;
+    remaining = Math.max(0, remaining - heldPlaces(id, now));
     let reason: SessionAvailability["reason"] = null;
     if (end.getTime() <= now.getTime()) reason = "past";
     else if (start.getTime() - now.getTime() < service.cutoffMinutes * 60_000) reason = "cutoff";
@@ -258,7 +263,7 @@ function sessionsFor(venue: Venue, service: Service, date: string, now: Date): S
       remaining = 0;
     } else if (remaining === 0) reason = "full";
     return {
-      id: `sess:${venue.slug}:${date}:${time.replace(":", "")}`,
+      id,
       startsAt: start.toISOString(),
       endsAt: end.toISOString(),
       capacity,
@@ -283,7 +288,9 @@ function slotsFor(venue: Venue, service: Service, date: string, extraMinutes: nu
     const start = zonedDateTime(date, hhmm, TZ);
     if (start.getTime() - now.getTime() < service.leadTimeMinutes * 60_000) continue;
     if (hash(`${venue.slug}|${service.slug}|${date}|${hhmm}`) % 4 === 0) continue; // already booked
-    out.push({ startsAt: start.toISOString(), endsAt: new Date(start.getTime() + length * 60_000).toISOString() });
+    const end = new Date(start.getTime() + length * 60_000);
+    if (partyHeld(venue.slug, start, end, now)) continue; // someone (maybe you) is holding the party room
+    out.push({ startsAt: start.toISOString(), endsAt: end.toISOString() });
   }
   return out;
 }
@@ -316,7 +323,7 @@ function quoteFor(body: QuoteRequest): { venue: Venue; service: Service; quote: 
     const option = service.options.find((o) => o.id === l.optionId);
     if (!option || !Number.isInteger(l.qty)) throw new FixtureError(400, "INVALID", "Unknown option");
     if (option.maxPerBooking !== null && l.qty > option.maxPerBooking) {
-      throw new FixtureError(409, "LIMIT", `At most ${option.maxPerBooking} of ${option.name}`, option.maxPerBooking);
+      throw new FixtureError(409, "LIMIT", `${option.name}: up to ${option.maxPerBooking} per booking.`, option.maxPerBooking);
     }
     quote.lines.push({
       optionId: option.id,
@@ -335,7 +342,7 @@ function quoteFor(body: QuoteRequest): { venue: Venue; service: Service; quote: 
     const addOn = service.addOns.find((x) => x.id === a.addOnId);
     if (!addOn || !Number.isInteger(a.qty)) throw new FixtureError(400, "INVALID", "Unknown add-on");
     if (addOn.maxQuantity !== null && a.qty > addOn.maxQuantity) {
-      throw new FixtureError(409, "LIMIT", `At most ${addOn.maxQuantity} of ${addOn.name}`, addOn.maxQuantity);
+      throw new FixtureError(409, "LIMIT", `${addOn.name}: up to ${addOn.maxQuantity}.`, addOn.maxQuantity);
     }
     if (addOn.perChild) extraChildren += a.qty;
     if (addOn.kind === "time") quote.extraMinutes += addOn.extraMinutes * a.qty;
@@ -352,7 +359,7 @@ function quoteFor(body: QuoteRequest): { venue: Venue; service: Service; quote: 
   }
   if (service.kind === "slot") quote.places = included + extraChildren;
   if (service.kind === "session" && quote.places > venue.maxPlacesPerBooking) {
-    throw new FixtureError(409, "LIMIT", `At most ${venue.maxPlacesPerBooking} places per booking`, venue.maxPlacesPerBooking);
+    throw new FixtureError(409, "LIMIT", `Up to ${venue.maxPlacesPerBooking} places per booking.`, venue.maxPlacesPerBooking);
   }
   if (service.inStoreNote) quote.inStoreNotes.push(service.inStoreNote.short);
   quote.subtotalPence = [...quote.lines, ...quote.addOns].reduce((sum, x) => sum + x.totalPence, 0);
@@ -365,6 +372,8 @@ function quoteFor(body: QuoteRequest): { venue: Venue; service: Service; quote: 
 
 interface FixtureHold {
   id: string;
+  /** Workshops only. */
+  sessionId?: string;
   expiresAt: number;
   startsAt: string;
   endsAt: string;
@@ -380,6 +389,28 @@ interface StoredBooking {
 }
 
 const holds = new Map<string, FixtureHold>();
+
+function activeHolds(now: Date): FixtureHold[] {
+  return [...holds.values()].filter((h) => h.expiresAt > now.getTime());
+}
+
+/** Places held (not yet booked) in a workshop session. */
+function heldPlaces(sessionId: string, now: Date): number {
+  return activeHolds(now)
+    .filter((h) => h.sessionId === sessionId)
+    .reduce((sum, h) => sum + h.quote.places, 0);
+}
+
+/** True when an active party hold at this venue overlaps [start, end) (half-open). */
+function partyHeld(venueSlug: string, start: Date, end: Date, now: Date): boolean {
+  return activeHolds(now).some(
+    (h) =>
+      h.service.kind === "slot" &&
+      h.venue.slug === venueSlug &&
+      start.getTime() < new Date(h.endsAt).getTime() &&
+      end.getTime() > new Date(h.startsAt).getTime(),
+  );
+}
 const memoryBookings = new Map<string, string>();
 const STORE_PREFIX = "baypook-fixture-booking:";
 
@@ -481,18 +512,39 @@ function handle(method: string, url: URL, init: RequestInit | undefined, opts: R
         if (hhmm === "1430") throw new FixtureError(409, "GONE", "Fixture: 14:30 sessions always go just before you hold them");
         const session = sessionsFor(venue, service, date, now).find((s) => s.id === body.sessionId);
         if (!session) throw new FixtureError(404, "NOT_FOUND", "Session not found");
-        if (!session.bookable || session.remaining < quote.places) throw new FixtureError(409, "GONE", "Not enough places");
+        if (!session.bookable) throw new FixtureError(409, "GONE", "That session is no longer bookable");
+        if (session.remaining < quote.places) {
+          const n = session.remaining;
+          throw new FixtureError(409, "LIMIT", `Only ${n} ${n === 1 ? "place" : "places"} left at this time.`, n);
+        }
         startsAt = session.startsAt;
         endsAt = session.endsAt;
       } else {
         if (!body.startsAt) throw new FixtureError(400, "INVALID", "startsAt is required for parties");
         startsAt = body.startsAt;
         endsAt = new Date(new Date(startsAt).getTime() + (service.lengthMinutes + quote.extraMinutes) * 60_000).toISOString();
+        if (partyHeld(venue.slug, new Date(startsAt), new Date(endsAt), now)) throw new FixtureError(409, "GONE", "That party time is held");
       }
-      const hold: FixtureHold = { id: randomId("hold_"), expiresAt: now.getTime() + opts.holdSeconds * 1000, startsAt, endsAt, venue, service, quote };
+      const hold: FixtureHold = {
+        id: randomId("hold_"),
+        sessionId: service.kind === "session" ? body.sessionId : undefined,
+        expiresAt: now.getTime() + opts.holdSeconds * 1000,
+        startsAt,
+        endsAt,
+        venue,
+        service,
+        quote,
+      };
       holds.set(hold.id, hold);
       return json(201, { hold: { id: hold.id, expiresAt: new Date(hold.expiresAt).toISOString(), startsAt, endsAt }, quote });
     });
+  }
+
+  if (method === "DELETE" && (m = path.match(/^\/holds\/([^/]+)$/))) {
+    const id = decodeURIComponent(m[1]);
+    const had = holds.delete(id);
+    console.info(`[BayPook fixture] DELETE /holds/${id}: ${had ? "released" : "nothing to release"}`);
+    return json(200, { released: true });
   }
 
   if (method === "POST" && path === "/checkout") {
@@ -543,7 +595,7 @@ function handle(method: string, url: URL, init: RequestInit | undefined, opts: R
       // A real API sends the customer to Stripe (or the demo checkout page); the fixture skips straight back.
       const checkoutUrl =
         c.firstName.trim().toLowerCase() === "cancel"
-          ? appendQuery(base, `cancelled=1&${venueQ}`)
+          ? appendQuery(base, `cancelled=1&${venueQ}&fixture=1`)
           : appendQuery(base, `paid=1&${venueQ}&booking=${token}`);
       return json(200, { bookingId, reference, checkoutUrl });
     });

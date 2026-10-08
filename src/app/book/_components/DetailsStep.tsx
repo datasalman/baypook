@@ -124,6 +124,7 @@ export function DetailsStep({
   expired,
   onExpire,
   onChooseAgain,
+  onCheckoutRedirect,
   onBack,
 }: {
   client: BayPookClient;
@@ -133,6 +134,8 @@ export function DetailsStep({
   expired: boolean;
   onExpire: () => void;
   onChooseAgain: () => void;
+  /** Called just before leaving for payment (or the thank-you page): the hold now belongs to the booking. */
+  onCheckoutRedirect: () => void;
   onBack: () => void;
 }) {
   const isParty = service.kind === "slot";
@@ -180,6 +183,7 @@ export function DetailsStep({
     if (input.message.trim()) body.message = input.message.trim();
     try {
       const res = await client.checkout(body);
+      onCheckoutRedirect();
       // Leave the page: to Stripe Checkout (or the demo checkout), or straight to the thank-you page.
       window.location.assign(isPayInStoreCheckout(res) ? res.thanksUrl : res.checkoutUrl);
     } catch (err) {

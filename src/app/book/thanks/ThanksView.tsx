@@ -7,6 +7,7 @@ import type { BookingSummary } from "@/client/types";
 import { DEFAULT_TZ } from "@/core/time";
 import { Button, Card, focusRing, Loading, Notice } from "../_components/ui";
 import { formatWhen } from "../_lib/dates";
+import { forgetHold, storedHoldId } from "../_lib/holdSession";
 import { FIXTURE_ALLOWED, FIXTURE_TOKEN_PREFIX, useBookingClient } from "../_lib/useBookingClient";
 
 const POLL_EVERY_MS = 2000;
@@ -108,6 +109,15 @@ export function ThanksView() {
   const [summary, setSummary] = useState<BookingSummary | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+
+  // The hold placed before payment: release it if the customer cancelled; otherwise the booking owns it.
+  useEffect(() => {
+    if (!client || (!cancelled && !token)) return;
+    const holdId = storedHoldId();
+    if (!holdId) return;
+    forgetHold(holdId);
+    if (cancelled) void client.releaseHold(holdId);
+  }, [client, cancelled, token]);
 
   useEffect(() => {
     if (!client || !token || cancelled) return;

@@ -116,6 +116,25 @@ describe("createBayPookClient requests", () => {
       "https://bp.test/api/v1/bookings/tok%2Fen/summary",
     ]);
   });
+
+  it("releaseHold() DELETEs the hold with keepalive and resolves", async () => {
+    const { fetch, calls } = mockFetch([{ status: 200, body: { released: true } }]);
+    const api = createBayPookClient({ baseUrl: "https://bp.test", fetch });
+    await expect(api.releaseHold("h 1")).resolves.toBeUndefined();
+    expect(calls[0].url).toBe("https://bp.test/api/v1/holds/h%201");
+    expect(calls[0].init?.method).toBe("DELETE");
+    expect(calls[0].init?.keepalive).toBe(true);
+    expect(calls[0].init?.body).toBeUndefined();
+  });
+
+  it("releaseHold() never throws: network failures and error responses are swallowed", async () => {
+    const { fetch, calls } = mockFetch([new TypeError("Failed to fetch"), { status: 500, raw: "oops" }]);
+    const api = createBayPookClient({ baseUrl: "", fetch });
+    await expect(api.releaseHold("h1")).resolves.toBeUndefined();
+    await expect(api.releaseHold("h2")).resolves.toBeUndefined();
+    await expect(api.releaseHold("")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(2);
+  });
 });
 
 describe("error mapping", () => {
@@ -128,6 +147,14 @@ describe("error mapping", () => {
     expect(err.status).toBe(409);
     expect(err.limit).toBe(10);
     expect(err.message).toBe("Too many places");
+    expect(err.serverMessage).toBe("Too many places");
+  });
+
+  it("leaves serverMessage unset when the server sent no message", () => {
+    const err = errorFromResponse(409, { error: { code: "LIMIT", message: "", limit: 4 } });
+    expect(err.serverMessage).toBeUndefined();
+    expect(err.message).toBe("Request failed (409)");
+    expect(errorFromResponse(500, null).serverMessage).toBeUndefined();
   });
 
   it.each([
@@ -178,7 +205,6 @@ describe("error mapping", () => {
 describe("friendlyMessage", () => {
   it("uses the agreed customer wording", () => {
     expect(friendlyMessage(new BayPookError("GONE", "x", 409))).toBe("That time has just gone. Please pick another.");
-    expect(friendlyMessage(new BayPookError("LIMIT", "x", 409, 10))).toBe("You can book up to 10 places in one go.");
     expect(friendlyMessage(new BayPookError("HOLD_EXPIRED", "x", 410))).toBe(
       "Your 15 minutes ran out, so we released the places. Please choose your time again.",
     );
@@ -187,6 +213,24 @@ describe("friendlyMessage", () => {
     );
     expect(friendlyMessage(new BayPookError("NETWORK", "x", 0))).toBe(
       "We could not reach the booking system. Check your connection and try again.",
+    );
+  });
+
+  it("prefers the server's own LIMIT message, falling back to generic wording", () => {
+    // On a hold, LIMIT carries the places still left, so the server's message is the accurate one.
+    expect(friendlyMessage(errorFromResponse(409, { error: { code: "LIMIT", message: "Only 4 places left at this time.", limit: 4 } }))).toBe(
+      "Only 4 places left at this time.",
+    );
+    expect(friendlyMessage(new BayPookError("LIMIT", "x", 409, 10, "Up to 10 places per booking."))).toBe("Up to 10 places per booking.");
+    expect(friendlyMessage(new BayPookError("LIMIT", "x", 409, 10))).toBe("You can book up to 10 places in one go.");
+    expect(friendlyMessage(errorFromResponse(409, { error: { code: "LIMIT", message: "", limit: 10 } }))).toBe(
+      "You can book up to 10 places in one go.",
+    );
+  });
+
+  it("only uses the server message for LIMIT", () => {
+    expect(friendlyMessage(errorFromResponse(409, { error: { code: "GONE", message: "Session sess_1 is full" } }))).toBe(
+      "That time has just gone. Please pick another.",
     );
   });
 

@@ -44,15 +44,18 @@ export class BayPookError extends Error {
   readonly code: ApiErrorCode;
   /** HTTP status; 0 when the request never got a response. */
   readonly status: number;
-  /** For LIMIT: the per-booking limit. */
+  /** For LIMIT: the number allowed (a per-booking limit, or on a hold the places still left). */
   readonly limit?: number;
+  /** The server's own `error.message`, when it sent one (customer-readable for LIMIT). */
+  readonly serverMessage?: string;
 
-  constructor(code: ApiErrorCode, message: string, status: number, limit?: number) {
+  constructor(code: ApiErrorCode, message: string, status: number, limit?: number, serverMessage?: string) {
     super(message);
     this.name = "BayPookError";
     this.code = code;
     this.status = status;
     if (limit !== undefined) this.limit = limit;
+    if (serverMessage) this.serverMessage = serverMessage;
   }
 }
 
@@ -71,6 +74,12 @@ export interface BayPookClient {
   createHold(body: HoldRequest): Promise<HoldResponse>;
   checkout(body: CheckoutRequest): Promise<CheckoutResponse>;
   bookingSummary(token: string): Promise<BookingSummary>;
+  /**
+   * Gives a hold's places back at once (the customer changed their selection or left).
+   * Best effort: never throws. Sent with `keepalive`, so it also works from `pagehide`.
+   * Do not call it after a successful checkout redirect: the pending booking owns the hold then.
+   */
+  releaseHold(id: string): Promise<void>;
 }
 
 /** Builds `<baseUrl>/api/v1<path>?<query>`; undefined query values are left out. */
@@ -116,7 +125,8 @@ export function errorFromResponse(status: number, body: unknown): BayPookError {
   if (isErrorBody(body)) {
     const { code, message, limit } = body.error;
     const known = SERVER_CODES.includes(code) ? (code as ApiErrorCode) : codeForStatus(status);
-    return new BayPookError(known, message || `Request failed (${status})`, status, typeof limit === "number" ? limit : undefined);
+    const serverMessage = typeof message === "string" && message.trim() ? message.trim() : undefined;
+    return new BayPookError(known, serverMessage ?? `Request failed (${status})`, status, typeof limit === "number" ? limit : undefined, serverMessage);
   }
   return new BayPookError(codeForStatus(status), `Request failed (${status})`, status);
 }
@@ -126,14 +136,16 @@ export function createBayPookClient(opts: BayPookClientOptions): BayPookClient {
   const doFetch: typeof fetch = opts.fetch ?? ((input, init) => fetch(input, init));
   const base = opts.baseUrl;
 
-  async function request<T>(method: "GET" | "POST", url: string, body?: unknown): Promise<T> {
+  async function request<T>(method: "GET" | "POST" | "DELETE", url: string, body?: unknown, keepalive?: boolean): Promise<T> {
     let res: Response;
     try {
-      res = await doFetch(url, {
+      const init: RequestInit = {
         method,
         headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      };
+      if (keepalive) init.keepalive = true;
+      res = await doFetch(url, init);
     } catch (err) {
       throw new BayPookError("NETWORK", err instanceof Error ? err.message : "Network request failed", 0);
     }
@@ -187,6 +199,14 @@ export function createBayPookClient(opts: BayPookClientOptions): BayPookClient {
     bookingSummary(token) {
       return request<BookingSummary>("GET", buildUrl(base, `/bookings/${encodeURIComponent(token)}/summary`));
     },
+    async releaseHold(id) {
+      if (!id) return;
+      try {
+        await request<{ released: boolean }>("DELETE", buildUrl(base, `/holds/${encodeURIComponent(id)}`), undefined, true);
+      } catch {
+        // Best effort: an unreleased hold simply lapses on its own.
+      }
+    },
   };
 }
 
@@ -197,6 +217,8 @@ export function friendlyMessage(err: unknown): string {
     case "GONE":
       return "That time has just gone. Please pick another.";
     case "LIMIT": {
+      // The server says which limit it hit ("Only 2 places left at this time.", "Up to 10 places per booking.").
+      if (err instanceof BayPookError && err.serverMessage) return err.serverMessage;
       const limit = err instanceof BayPookError ? err.limit : undefined;
       return limit !== undefined
         ? `You can book up to ${limit} places in one go.`

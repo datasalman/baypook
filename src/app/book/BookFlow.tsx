@@ -24,6 +24,7 @@ import { ServiceStep } from "./_components/ServiceStep";
 import { TimeStep } from "./_components/TimeStep";
 import { Button, Loading, Notice } from "./_components/ui";
 import { VenueStep } from "./_components/VenueStep";
+import { forgetHold, rememberHold } from "./_lib/holdSession";
 import { FIXTURE_ALLOWED, useBookingClient } from "./_lib/useBookingClient";
 import { useQuote } from "./_lib/useQuote";
 
@@ -49,6 +50,17 @@ function loadMessage(err: unknown): string {
   if (err instanceof BayPookError && (err.code === "NETWORK" || err.code === "RATE_LIMITED")) return friendlyMessage(err);
   return "We could not load the booking options just now. Please try again, or message or call us to book.";
 }
+
+/** The hold this page placed: the request it was made from, the response, and (workshops) its session. */
+type HeldState = {
+  key: string;
+  res: HoldResponse;
+  /** The day and the lines/add-ons it was placed for. */
+  date: string;
+  selKey: string;
+  /** Workshops only. */
+  sessionId?: string;
+};
 
 /** A hold is reused when the customer steps back and forward without changing anything. */
 const HOLD_REUSE_MARGIN_MS = 60_000;
@@ -84,7 +96,7 @@ export function BookFlow() {
   const [packageId, setPackageId] = useState("");
   const [addOnQty, setAddOnQty] = useState<Record<string, number>>({});
 
-  const [hold, setHold] = useState<{ key: string; res: HoldResponse } | null>(null);
+  const [hold, setHold] = useState<HeldState | null>(null);
   const [holdExpired, setHoldExpired] = useState(false);
   const [holdBusy, setHoldBusy] = useState(false);
   const [holdError, setHoldError] = useState<string | null>(null);
@@ -94,6 +106,61 @@ export function BookFlow() {
   const appliedVenue = useRef(false);
   const appliedItem = useRef(false);
 
+  // The hold this page placed, mirrored in refs so release can happen outside render (pagehide).
+  const holdRef = useRef<HeldState | null>(null);
+  const clientRef = useRef(client);
+  /** The hold handed to checkout: the pending booking owns it now, so the page never releases it. */
+  const checkedOutRef = useRef<string | null>(null);
+  /** The hold released when the page was hidden (it may come back from the back/forward cache). */
+  const releasedOnHideRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    clientRef.current = client;
+  }, [client]);
+
+  const adoptHold = useCallback((next: HeldState) => {
+    holdRef.current = next;
+    setHold(next);
+    rememberHold(next.res.hold.id);
+  }, []);
+
+  /** Drop the current hold and give its places back (best effort; never throws). */
+  const discardHold = useCallback((): Promise<void> => {
+    const current = holdRef.current;
+    holdRef.current = null;
+    setHold(null);
+    if (!current) return Promise.resolve();
+    const id = current.res.hold.id;
+    forgetHold(id);
+    if (id === releasedOnHideRef.current) return Promise.resolve();
+    return clientRef.current?.releaseHold(id) ?? Promise.resolve();
+  }, []);
+
+  // Leaving the page with a hold that never reached checkout: release it so the places come free now.
+  useEffect(() => {
+    if (!client) return;
+    const onHide = () => {
+      const id = holdRef.current?.res.hold.id;
+      if (!id || id === checkedOutRef.current || id === releasedOnHideRef.current) return;
+      releasedOnHideRef.current = id;
+      forgetHold(id);
+      void client.releaseHold(id); // keepalive fetch, so it survives the page going away
+    };
+    const onShow = (e: PageTransitionEvent) => {
+      // Back from the back/forward cache after we released: the details form must not use that hold.
+      if (e.persisted && holdRef.current && holdRef.current.res.hold.id === releasedOnHideRef.current) {
+        setHoldExpired(true);
+        setTimeNonce((n) => n + 1); // the times on screen still count that hold: fetch them again
+      }
+    };
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("pageshow", onShow);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("pageshow", onShow);
+    };
+  }, [client]);
+
   const chooseService = useCallback((s: Service, keepDate: boolean) => {
     setService(s);
     setQty({});
@@ -101,12 +168,12 @@ export function BookFlow() {
     setAddOnQty({});
     setSession(null);
     setSlotStart(null);
-    setHold(null);
+    void discardHold();
     setHoldError(null);
     setTimeFlash(null);
     if (!keepDate) setDate(null);
     setStep("day");
-  }, []);
+  }, [discardHold]);
 
   // Venues, then the deep-linked venue.
   useEffect(() => {
@@ -226,7 +293,13 @@ export function BookFlow() {
     if (!client || !venue || !service || !selection) return;
     const req: HoldRequest = { venue: venue.slug, service: service.id, ...selection, ...target };
     const key = JSON.stringify(req);
-    if (hold && hold.key === key && new Date(hold.res.hold.expiresAt).getTime() - Date.now() > HOLD_REUSE_MARGIN_MS) {
+    const prev = holdRef.current;
+    if (
+      prev &&
+      prev.key === key &&
+      prev.res.hold.id !== releasedOnHideRef.current &&
+      new Date(prev.res.hold.expiresAt).getTime() - Date.now() > HOLD_REUSE_MARGIN_MS
+    ) {
       setHoldExpired(false);
       setStep("details");
       return;
@@ -235,8 +308,11 @@ export function BookFlow() {
     setHoldError(null);
     setTimeFlash(null);
     try {
+      // The selection changed (or the old hold is nearly up): give those places back first,
+      // otherwise the customer's own hold would block the new one.
+      if (prev) await discardHold();
       const res = await client.createHold(req);
-      setHold({ key, res });
+      adoptHold({ key, res, date: date ?? "", selKey: JSON.stringify(selection), sessionId: target.sessionId });
       setHoldExpired(false);
       setStep("details");
     } catch (err) {
@@ -280,7 +356,7 @@ export function BookFlow() {
           if (v.slug !== venue?.slug) {
             setVenue(v);
             setService(null);
-            setHold(null);
+            void discardHold();
           }
           setStep("service");
         }}
@@ -330,6 +406,16 @@ export function BookFlow() {
         date={date}
         extraMinutes={extraMinutes}
         selectedId={service.kind === "slot" ? (slotStart?.startsAt ?? null) : (session?.id ?? null)}
+        held={
+          hold && !holdExpired && hold.date === date && (service.kind === "session" || hold.selKey === JSON.stringify(selection))
+            ? {
+                sessionId: hold.sessionId,
+                places: hold.res.quote.places,
+                startsAt: hold.res.hold.startsAt,
+                endsAt: hold.res.hold.endsAt,
+              }
+            : null
+        }
         flash={timeFlash}
         busy={holdBusy}
         backLabel={service.kind === "slot" ? "Change children and extras" : "Change day"}
@@ -381,8 +467,11 @@ export function BookFlow() {
           onAddOn={(id, v) => setAddOnQty((q) => ({ ...q, [id]: v }))}
           quote={quote}
           onBack={back}
-          onContinue={() => {
+          onContinue={async () => {
             setTimeFlash(null);
+            // Changed the children or extras: give the old party time back before looking for times,
+            // so it is not hidden by the customer's own hold.
+            if (holdRef.current && holdRef.current.selKey !== JSON.stringify(selection)) await discardHold();
             setStep("time");
           }}
         />
@@ -396,8 +485,11 @@ export function BookFlow() {
         hold={hold.res}
         expired={holdExpired}
         onExpire={() => setHoldExpired(true)}
+        onCheckoutRedirect={() => {
+          checkedOutRef.current = hold.res.hold.id;
+        }}
         onChooseAgain={() => {
-          setHold(null);
+          void discardHold();
           setHoldExpired(false);
           setSession(null);
           setSlotStart(null);

@@ -105,7 +105,7 @@ try {
 ```
 
 Notes:
-- If the customer goes back and changes the time or the places, create a new hold. The old one lapses on its own (or release it at once with `fetch(\`${venue.bookingApi}/api/v1/holds/${hold.id}\`, { method: "DELETE" })`).
+- If the customer goes back and changes the time or the places, call `await api.releaseHold(oldHold.id)` before `createHold` (otherwise their own old hold blocks the new one); `releaseHold` never throws and uses a `keepalive` fetch, so also call it on `pagehide` for a hold that never reached checkout and on `/book/thanks?cancelled=1`, but never after a successful checkout redirect (the pending booking owns the hold then).
 - Terms and waiver: BayPook refuses the checkout unless both boxes are ticked, and stores the versions it showed.
 - Pay in store (only if the owner turns it on for a service): pass `payInStore: true`; the response has `thanksUrl` instead of `checkoutUrl`.
 
@@ -141,7 +141,7 @@ Every API error has a stable `code`. `friendlyMessage(err)` in the client alread
 | Code | When | Customer sees |
 |---|---|---|
 | `GONE` | Time taken, full, blocked or past the cut-off | "That time has just gone. Please pick another." |
-| `LIMIT` | Too many places (`err.limit` carries the number) | "You can book up to {limit} places in one go." |
+| `LIMIT` | Too many places (`err.limit` carries the number) | The server's own message, e.g. "Only 2 places left at this time." (falls back to "You can book up to {limit} places in one go.") |
 | `HOLD_EXPIRED` | The 15 minutes ran out | "Your 15 minutes ran out, so we released the places. Please choose your time again." |
 | `UNAVAILABLE` | Venue closed or cannot take payments | "Online booking is not available for this venue right now. Message or call us." |
 | `INVALID` | Something in the form is wrong | "Something in your booking needs another look. Please check and try again." |
