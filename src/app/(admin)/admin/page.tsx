@@ -1,61 +1,92 @@
-import { and, asc, eq, gte, lt } from "drizzle-orm";
-import { getDb } from "@/db";
-import * as s from "@/db/schema";
-import { addDays, endOfLocalDay, fmtDayLong, fmtTime, localDate, startOfLocalDay } from "@/core/time";
-import { getOrganisation, listVenues } from "@/server/org";
-import { ensureVenueSessions } from "@/server/sessions";
+import type { Metadata } from "next";
+import { fmtDayLong, startOfLocalDay, weekdayKey, zonedDateTime } from "@/core/time";
+import type * as s from "@/db/schema";
+import { getAdminContext } from "@/server/venue-scope";
+import { Button, DateNav, EmptyState, PageHeader, SectionTitle } from "@/components/ui";
+import { ScheduleList } from "@/components/admin/ScheduleCards";
+import { dateParam, relativeDayName, todayIn, type SearchParams } from "./_lib/dates";
+import { groupByVenue, loadSchedule, type ScheduleItem } from "./_lib/schedule";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { title: "Today" };
 
-/** Stage 0 placeholder admin: lists venues and tomorrow's sessions from the seed. */
-export default async function AdminHome() {
-  const db = await getDb();
-  const org = await getOrganisation(db);
-  const venues = await listVenues(db);
-  const tomorrow = addDays(localDate(new Date(), org.timezone), 1);
-  const from = startOfLocalDay(tomorrow, org.timezone);
-  const to = endOfLocalDay(tomorrow, org.timezone);
+function closedNote(venue: s.Venue, date: string, tz: string): string {
+  const noon = zonedDateTime(date, "12:00", tz);
+  if (venue.opensAt && venue.opensAt > noon) {
+    return `${venue.name} opens on ${fmtDayLong(venue.opensAt, tz)}.`;
+  }
+  if (!venue.openingHours[weekdayKey(noon, tz)]) return `${venue.name} is closed on this day.`;
+  return "No sessions, parties or blocked time.";
+}
 
-  const perVenue = [];
-  for (const v of venues) {
-    await ensureVenueSessions(db, v.id, tomorrow, tomorrow, org.timezone);
-    const rows = await db
-      .select({ startsAt: s.sessions.startsAt, endsAt: s.sessions.endsAt, capacity: s.sessions.capacity, service: s.services.name, room: s.rooms.name })
-      .from(s.sessions)
-      .innerJoin(s.services, eq(s.services.id, s.sessions.serviceId))
-      .innerJoin(s.rooms, eq(s.rooms.id, s.sessions.roomId))
-      .where(and(eq(s.sessions.venueId, v.id), gte(s.sessions.startsAt, from), lt(s.sessions.startsAt, to), eq(s.sessions.status, "scheduled")))
-      .orderBy(asc(s.sessions.startsAt));
-    perVenue.push({ venue: v, rows });
+function summary(items: ScheduleItem[]): string {
+  const sessions = items.filter((i) => i.kind === "session");
+  const parties = items.filter((i) => i.kind === "party");
+  const places = sessions.reduce((n, i) => n + (i.kind === "session" ? i.taken : 0), 0);
+  const parts = [`${places} ${places === 1 ? "place" : "places"} booked`];
+  if (parties.length) parts.push(`${parties.length} ${parties.length === 1 ? "party" : "parties"}`);
+  return parts.join(" · ");
+}
+
+export default async function TodayPage({ searchParams }: { searchParams: SearchParams }) {
+  const ctx = await getAdminContext();
+  const sp = await searchParams;
+  const tz = ctx.org.timezone;
+  const today = todayIn(tz);
+  const date = dateParam(sp.date, today);
+  const label = fmtDayLong(startOfLocalDay(date, tz), tz);
+  const rel = relativeDayName(date, today);
+
+  const venueIds = ctx.selectedVenues.map((v) => v.id);
+  const items = await loadSchedule(ctx.db, { venueIds, from: date, to: date, tz });
+  const grouped = groupByVenue(items, venueIds);
+  const single = ctx.selectedVenues.length === 1 ? ctx.selectedVenues[0] : null;
+
+  const newBookingHref = `/admin/bookings/new?${new URLSearchParams({ ...(single ? { venue: single.slug } : {}), date }).toString()}`;
+
+  if (!ctx.venues.length) {
+    return (
+      <EmptyState title="No venue yet">
+        Your account is not linked to a venue. Ask the owner to add you to one in Users and invites.
+      </EmptyState>
+    );
   }
 
   return (
-    <main className="mx-auto max-w-2xl p-4">
-      <h1 className="text-2xl font-semibold">{org.name} admin</h1>
-      <p className="text-sm opacity-70">Tomorrow, {fmtDayLong(from, org.timezone)}</p>
-      {perVenue.map(({ venue, rows }) => (
-        <section key={venue.id} className="mt-6">
-          <h2 className="text-lg font-semibold">
-            {venue.name} <span className="text-sm font-normal opacity-60">({venue.status})</span>
-          </h2>
-          {rows.length === 0 ? (
-            <p className="text-sm opacity-70">No sessions tomorrow.</p>
-          ) : (
-            <ul className="mt-2 divide-y rounded-lg border">
-              {rows.map((r) => (
-                <li key={r.startsAt.toISOString() + r.service} className="flex items-center justify-between p-3">
-                  <span>
-                    {fmtTime(r.startsAt, org.timezone)} to {fmtTime(r.endsAt, org.timezone)} {r.service}
-                  </span>
-                  <span className="text-sm opacity-70">
-                    {r.room}, {r.capacity} places
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
-    </main>
+    <>
+      <PageHeader
+        title={rel ?? label}
+        subtitle={rel ? label : single ? single.name : "All venues"}
+        actions={
+          <Button href={newBookingHref} size="lg">
+            New booking
+          </Button>
+        }
+      />
+      <DateNav value={date} today={today} label={rel ? `${rel}, ${label}` : label} />
+
+      {ctx.selectedVenues.map((venue) => {
+        const list = grouped.get(venue.id) ?? [];
+        const rooms = new Set(list.flatMap((i) => (i.kind === "block" ? [] : [i.roomName])));
+        return (
+          <section key={venue.id} aria-labelledby={`venue-${venue.id}`} className="mb-6">
+            {ctx.selectedVenues.length > 1 || !single ? (
+              <SectionTitle aside={list.length ? summary(list) : undefined}>
+                <span id={`venue-${venue.id}`}>{venue.name}</span>
+              </SectionTitle>
+            ) : (
+              <p id={`venue-${venue.id}`} className="mb-2 text-sm font-semibold text-muted">
+                {list.length ? summary(list) : venue.name}
+              </p>
+            )}
+            {list.length ? (
+              <ScheduleList items={list} tz={tz} showRoom={rooms.size > 1} />
+            ) : (
+              <EmptyState title="Nothing on">{closedNote(venue, date, tz)}</EmptyState>
+            )}
+          </section>
+        );
+      })}
+    </>
   );
 }

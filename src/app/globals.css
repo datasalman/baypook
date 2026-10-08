@@ -1,26 +1,78 @@
 @import "tailwindcss";
 
+/*
+ * Brand tokens. `--brand`, `--ink` and `--brand-contrast` are overridden per
+ * organisation by the root layout (from the organisations row); these are the fallbacks.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --brand: #5bbf3a;
+  --ink: #1b1f1a;
+  /* Text colour that reads on top of --brand (ink or white, picked by the layout). */
+  --brand-contrast: #1b1f1a;
+  /* A darker brand shade for text, links and focus rings on white. */
+  --brand-strong: color-mix(in oklab, var(--brand) 55%, var(--ink));
+  --brand-soft: color-mix(in oklab, var(--brand) 14%, white);
+  --surface: #ffffff;
+  --canvas: #f5f6f3;
+  --line: #d9ddd5;
+  --muted: #555c52;
+  --warn-bg: #fff4d6;
+  --warn-ink: #6b4a00;
+  --warn-line: #e8c46a;
+  --danger: #b42318;
+  --danger-soft: #fde8e6;
+  color-scheme: light;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-contrast: var(--brand-contrast);
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-canvas: var(--canvas);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-line: var(--warn-line);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+/* Visible, consistent focus for keyboard users. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--brand-strong);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Keep the bottom nav clear of the iPhone home indicator. */
+.pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
