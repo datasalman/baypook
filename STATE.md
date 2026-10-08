@@ -4,7 +4,11 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1, wi
 
 ## Current task
 
-Complete. All four stages done, reviewed and verified. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
+Hardening pass after the MVP (all four stages done, reviewed and verified at commit 707aa31 and again after the UI-review fixes: 351 tests, Playwright 2/2). In flight: agent L (database-backed rate limit for holds/checkout/quote, active-hold cap per client, idle session timeout, retention of auth rows; schema migration `0002_rate_limits` already committed), agent R2 (second-round correctness review of the review fixes, read-only), agent P (more Playwright specs: party with Food time, conflict rule, manual booking + audit, staff scoping, price change, hold release; README screenshots under `docs/screenshots/`). After them: fix any R2 findings, `npm run check`, Playwright, `next build` in an isolated copy, final commit, fill the hash below.
+
+If resuming mid-way: `git status` shows which of those files are uncommitted; `npm run check` tells you whether they are consistent.
+
+Baseline statement: complete. All four stages done, reviewed and verified. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
 
 ## Half-finished
 
