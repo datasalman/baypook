@@ -77,6 +77,10 @@ scripts/                 demo launcher, seed, Wix CSV import
 | `npm run db:generate` / `db:migrate` | Drizzle migrations |
 | `npm run import:wix -- file.csv` | import future Wix bookings |
 
+## Continuous integration
+
+Every push to `main` runs `npm run check` and the Playwright smoke suite in demo mode on GitHub Actions (`.github/workflows/ci.yml`). A failed Playwright run uploads its report as an artifact.
+
 ## Documents
 
 - `docs/spec/` the requirements and build prompt

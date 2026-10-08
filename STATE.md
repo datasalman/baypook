@@ -112,6 +112,7 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 - `npm run test:coverage`: `src/core` 99.4% statements, 96.8% branches, 100% functions, 100% lines (thresholds 90/80/90/90).
 - `npm run test:e2e`: Playwright 13/13 across 6 spec files (one worker; about 2.5 min). Needs port 3100 free and `.data/e2e` wiped.
 - `next build`: passes; `next start` in demo mode serves `/api/v1`, `/book`, `/login`.
+- GitHub Actions (`.github/workflows/ci.yml`): both jobs (check; Playwright smoke in demo mode) passed on a clean Ubuntu runner for commit `cc4cd6f`+CI (run 37737748359).
 - Flaky only when several `next dev` servers run from one checkout (shared `.next`); run one at a time.
 
 ### 5. Git
