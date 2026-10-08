@@ -4,11 +4,11 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1. Sp
 
 ## Current task
 
-Stage 1/2 in flight. Done: A (core + holds, committed), B (email/ics/notifications/calendar, committed). Running: C admin shell + auth, D1 API + checkout + webhooks + bookings service, D2 `/book` page + client. Queued (briefs in `docs/agents/`): F1 catalogue/settings, F2 ops pages (after C), E booking actions admin (after C + D1), G jobs/import/integration/Playwright (after D1 + D2).
+Stages 1–3 in flight. Committed: A core/holds, B email/ics/notifications/calendar, C admin shell/auth/Today/Week/PWA, D2 `/book` + client, F1 catalogue/settings admin, F2 reports/connections/outbox/calendar-log/jobs/users/audit. Running: D1 API + checkout + webhooks + bookings service + demo checkout (files on disk, uncommitted: `src/server/bookings|checkout|webhooks|jobs|customers.ts`, `src/lib/api.ts`, `src/lib/validation.ts`, `src/app/api/**`, `src/app/demo/**`, `tests/api/**`), G reminders/retention jobs + import-wix + INTEGRATION.md + Playwright. Queued: E booking list/detail/actions + manual booking + customers admin (after D1).
 
 ## Half-finished
 
-Agent C's files (`src/server/auth.ts`, `src/components/ui`, `src/app/(admin)`, `src/app/layout.tsx`, `globals.css`) and D2's (`src/app/book`, `src/client`) are on disk but not yet committed; D1 is writing `src/server/bookings|checkout|webhooks|jobs|customers.ts`, `src/lib/api.ts`, `src/app/api/**`, `src/app/demo/**`.
+D1 and G running (see above). After D1: launch E, run the full demo walkthrough myself, `npm run check`, commit.
 
 ## Next three steps
 
