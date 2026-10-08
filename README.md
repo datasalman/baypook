@@ -13,6 +13,18 @@ Then open http://localhost:3100/admin, click **Sign in as owner**. Demo mode run
 
 The reference booking page is at http://localhost:3100/book (plain, functional, not the website's design). It uses the same `/api/v1` the website will use.
 
+## Ten-minute demo walkthrough
+
+1. `npm run demo`, then http://localhost:3100/login, **Sign in as owner**. Today shows both venues with sample bookings; use the date arrows or the Week tab.
+2. Open http://localhost:3100/book in another tab. South Woodford, Classic Workshops, a Saturday, 14:00, two Slime Workshop places, your details, tick both boxes, **Pay**. The demo checkout appears: press **Pay**. The thanks page confirms with a reference.
+3. Back in the admin: **More, Outbox** shows the confirmation email with its `.ics` attachment; **Bookings** lists the booking as Confirmed and Paid; Today shows the parent's name under the 14:00 session.
+4. In `/book` try a Slime Party at the same time: that time is not offered (a booked workshop blocks the one room). Pick a time over empty sessions: it is offered, and those sessions then show as full on `/book` and as "room busy" in the API.
+5. Start another booking and stop at the demo checkout (choose **Abandon**). After the hold length (15 minutes, Settings) **More, Jobs, Hold expiry, Run now** releases the places and cancels the pending booking.
+6. Open the booking: give a part refund, move it to another time, change the places, resend the confirmation, add a note. **More, Audit log** records each step.
+7. **Catalogue**: change the Slime Workshop price; the `/book` total and `GET /api/v1/venues/south-woodford/services` change at once.
+8. Sign out and **Sign in as Lakeside staff**: only Lakeside is visible, South Woodford bookings are refused, and there is no refund button.
+9. **Connections** shows every provider as Demo with the exact env var to set when going live.
+
 ## Going live
 
 Read `SETUP.md`: Stripe keys and webhooks per venue, Resend DNS, a Google service account, a Neon database, Vercel env vars, cron and domains, then the first owner login. `INTEGRATION.md` explains the website switch.
