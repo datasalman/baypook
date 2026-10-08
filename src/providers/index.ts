@@ -77,7 +77,7 @@ export function connectionStatuses(venues: { slug: string; name: string; googleC
     key: "database",
     label: "Database",
     state: demo ? "demo" : env.databaseUrl() ? "connected" : "missing",
-    detail: demo ? "Embedded demo database under .data/demo" : env.databaseUrl() ? "DATABASE_URL is set" : "DATABASE_URL is not set",
+    detail: demo ? `Embedded demo database under ${env.demoDir()}` : env.databaseUrl() ? "DATABASE_URL is set" : "DATABASE_URL is not set",
     setupStep: "SETUP.md step 4: database",
   });
 
