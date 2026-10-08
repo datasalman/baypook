@@ -26,6 +26,7 @@ import { createTestDb } from "@/db";
 import * as s from "@/db/schema";
 import { addMinutes, zonedDateTime } from "@/core/time";
 import { resetRateLimits } from "@/lib/api";
+import { clientKeyForIp } from "@/lib/rate-limit";
 import { confirmBookingPaid } from "@/server/bookings";
 import { expireHoldsJob } from "@/server/jobs";
 import { GET as venuesGET } from "@/app/api/v1/venues/route";
@@ -380,6 +381,91 @@ describe("public API (demo mode)", () => {
     }
     expect(last!.status).toBe(429);
     expect((await body<{ error: { code: string } }>(last!)).error.code).toBe("RATE_LIMITED");
+  });
+
+  it("caps active holds per client at 3 and frees a slot on release", async () => {
+    const ip = "198.51.100.7";
+    const day = "2026-10-31";
+    const res = await availabilityGET(
+      req(`/api/v1/venues/south-woodford/availability?service=classic-workshops&from=${day}&to=${day}`),
+      params({ slug: "south-woodford" }),
+    );
+    const session = (await body<{ days: { sessions: SessionJson[] }[] }>(res)).days[0].sessions.find((x) => x.bookable)!;
+    const hold = () =>
+      holdsPOST(
+        req("/api/v1/holds", {
+          method: "POST",
+          headers: { "x-forwarded-for": ip },
+          body: JSON.stringify({
+            venue: "south-woodford",
+            service: workshops().id,
+            sessionId: session.id,
+            lines: [{ optionId: slimeOption(), qty: 1 }],
+            addOns: [],
+          }),
+        }),
+        undefined,
+      );
+
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await hold();
+      expect(r.status).toBe(200);
+      ids.push((await body<{ hold: { id: string } }>(r)).hold.id);
+    }
+    const fourth = await hold();
+    expect(fourth.status).toBe(409);
+    expect((await body<{ error: Json }>(fourth)).error).toEqual({
+      code: "LIMIT",
+      message: "You already have 3 bookings on hold. Finish or wait for them to run out.",
+      limit: 3,
+    });
+
+    // The hold stores only the hashed IP.
+    const [row] = await holder.db!.select().from(s.holds).where(eq(s.holds.id, ids[0]));
+    expect(row.clientKey).toBe(clientKeyForIp(ip));
+    expect(row.clientKey).not.toContain(ip);
+
+    // Another client is not affected.
+    const other = await holdsPOST(
+      req("/api/v1/holds", {
+        method: "POST",
+        headers: { "x-forwarded-for": "198.51.100.8" },
+        body: JSON.stringify({ venue: "south-woodford", service: workshops().id, sessionId: session.id, lines: [{ optionId: slimeOption(), qty: 1 }], addOns: [] }),
+      }),
+      undefined,
+    );
+    expect(other.status).toBe(200);
+
+    await holdDELETE(req(`/api/v1/holds/${ids[0]}`, { method: "DELETE" }), params({ id: ids[0] }));
+    expect((await hold()).status).toBe(200);
+    expect((await hold()).status).toBe(409);
+
+    // Expired holds stop counting.
+    vi.setSystemTime(addMinutes(NOW, 16));
+    expect((await hold()).status).toBe(200);
+  });
+
+  it("rate-limits hold requests per IP across instances (database), with Retry-After", async () => {
+    const send = () =>
+      holdsPOST(req("/api/v1/holds", { method: "POST", body: "{}", headers: { "x-forwarded-for": "198.51.100.9" } }), undefined);
+    for (let i = 0; i < 10; i++) expect((await send()).status).toBe(400);
+    resetRateLimits(); // a different serverless instance: only the database remembers
+    const refused = await send();
+    expect(refused.status).toBe(429);
+    expect((await body<{ error: { code: string } }>(refused)).error.code).toBe("RATE_LIMITED");
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(Number(refused.headers.get("retry-after"))).toBeLessThanOrEqual(60);
+
+    vi.setSystemTime(new Date(NOW.getTime() + 61_000));
+    expect((await send()).status).toBe(400);
+  });
+
+  it("rate-limits checkout requests per IP (database)", async () => {
+    const send = () =>
+      checkoutPOST(req("/api/v1/checkout", { method: "POST", body: "{}", headers: { "x-forwarded-for": "198.51.100.10" } }), undefined);
+    for (let i = 0; i < 10; i++) expect((await send()).status).toBe(400);
+    expect((await send()).status).toBe(429);
   });
 
   it("does not use the Stripe webhook in demo mode", async () => {

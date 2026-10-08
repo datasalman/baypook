@@ -7,7 +7,7 @@
  * Once checkout creates the pending booking it should call `attachHoldToBooking`;
  * from then on the pending booking counts the places and the hold is the expiry timer.
  */
-import { and, eq, lte } from "drizzle-orm";
+import { and, count, eq, gt, isNull, lte } from "drizzle-orm";
 import type { Db, DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import type { NotBookableReason } from "@/core/availability";
@@ -50,6 +50,8 @@ export async function createHold(
     addOns: { addOnId: string; qty: number }[];
     now?: Date;
     tz?: string;
+    /** The hashed client IP (`clientKey(req)` in `@/lib/api`), for the per-client cap on active holds. */
+    clientKey?: string | null;
   },
 ): Promise<{ hold: s.Hold; quote: Quote }> {
   const { venue, service } = input;
@@ -107,6 +109,7 @@ export async function createHold(
           places: q.places,
           expiresAt: addMinutes(now, input.holdMinutes),
           status: "active",
+          clientKey: input.clientKey ?? null,
         })
         .returning();
       return { hold, quote: q };
@@ -114,6 +117,19 @@ export async function createHold(
   } catch (e) {
     throw toHoldError(e);
   }
+}
+
+/**
+ * How many holds this client has that still keep places: active, unexpired and not
+ * yet attached to a pending booking (once attached, the booking is the customer's
+ * and checkout's own limits apply).
+ */
+export async function countActiveHoldsForClient(db: DbOrTx, clientKey: string, now: Date = new Date()): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(s.holds)
+    .where(and(eq(s.holds.clientKey, clientKey), eq(s.holds.status, "active"), gt(s.holds.expiresAt, now), isNull(s.holds.bookingId)));
+  return Number(row?.n ?? 0);
 }
 
 /** The hold row, whatever its status, or null. */

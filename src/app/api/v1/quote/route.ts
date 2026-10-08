@@ -1,5 +1,5 @@
 import { getDb } from "@/db";
-import { json, preflight, readJson, withApi } from "@/lib/api";
+import { DB_RATE_LIMITS, json, preflight, readJson, withApi } from "@/lib/api";
 import { quoteBodySchema } from "@/lib/validation";
 import { quoteForService } from "@/server/quote";
 import { requireOnlineService, requireVenue } from "../_lib";
@@ -15,4 +15,4 @@ export const POST = withApi(async (req) => {
   const service = await requireOnlineService(db, venue, body.service);
   const quote = quoteForService(null, { service, venue, lines: body.lines, addOns: body.addOns });
   return json({ quote });
-});
+}, { dbRateLimit: DB_RATE_LIMITS.quote });

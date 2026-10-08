@@ -16,7 +16,15 @@ export const SESSION_COOKIE = "bp_session";
 
 export const MAGIC_LINK_TTL_MS = 15 * 60_000;
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
+/** A session not used for this long is rejected and deleted, even before its 30 days are up. */
+export const SESSION_IDLE_TIMEOUT_MS = 14 * 24 * 60 * 60_000;
 const LAST_SEEN_BUMP_MS = 10 * 60_000;
+/**
+ * `requestMagicLink` never answers faster than this, whatever the email, so the
+ * time it takes does not reveal whether an account exists. Sending usually fits
+ * inside it; a slow email provider can still stretch the known-email path.
+ */
+export const MAGIC_LINK_MIN_RESPONSE_MS = 400;
 /** At most this many unused, unexpired links per user at once (slows down mail-bombing). */
 const MAX_LIVE_LINKS = 5;
 
@@ -162,8 +170,16 @@ function parseSessionToken(value: string): { id: string; token: string } | null 
   return { id, token };
 }
 
-/** Validate a session cookie value and return its user. Bumps lastSeenAt at most every 10 minutes. */
-export async function getUserBySessionToken(db: DbOrTx, cookieValue: string | null | undefined): Promise<CurrentUser | null> {
+/**
+ * Validate a session cookie value and return its user. A session idle for more
+ * than 14 days (by `lastSeenAt`, or `createdAt` if never seen) is rejected and
+ * deleted. Bumps lastSeenAt at most every 10 minutes.
+ */
+export async function getUserBySessionToken(
+  db: DbOrTx,
+  cookieValue: string | null | undefined,
+  at: Date = new Date(),
+): Promise<CurrentUser | null> {
   if (!cookieValue) return null;
   const parsed = parseSessionToken(cookieValue);
   if (!parsed) return null;
@@ -172,8 +188,13 @@ export async function getUserBySessionToken(db: DbOrTx, cookieValue: string | nu
   const expected = Buffer.from(row.tokenHash, "hex");
   const given = Buffer.from(sha256(parsed.token), "hex");
   if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
-  const now = Date.now();
+  const now = at.getTime();
   if (row.expiresAt.getTime() <= now) return null;
+  const lastActive = (row.lastSeenAt ?? row.createdAt).getTime();
+  if (now - lastActive > SESSION_IDLE_TIMEOUT_MS) {
+    await db.delete(s.sessionsAuth).where(eq(s.sessionsAuth.id, row.id));
+    return null;
+  }
   const user = await loadUser(db, row.userId);
   if (!user) return null;
   if (!row.lastSeenAt || now - row.lastSeenAt.getTime() > LAST_SEEN_BUMP_MS) {
@@ -206,23 +227,47 @@ export function magicLinkUrl(token: string, next?: string): string {
  * Create and email a sign-in link. Unknown or inactive emails get the same
  * `{ sent: true }` answer and nothing is created (no account enumeration).
  * In demo mode the link is returned as well so the login page can show it.
+ *
+ * Timing: every outcome does the same lookups and token work, and none answers
+ * before `MAGIC_LINK_MIN_RESPONSE_MS`, so an unknown email is not measurably
+ * quicker than a known one. The production answer is to send the email after the
+ * response (`after()` from `next/server`), which takes the email provider out of
+ * the response time altogether; it needs a request scope, so the plain functions
+ * here (also used by the user admin and the tests) pad instead.
  */
-export async function requestMagicLink(db: Db, email: string, opts: { next?: string } = {}): Promise<{ sent: boolean; link?: string }> {
+export async function requestMagicLink(
+  db: Db,
+  email: string,
+  opts: { next?: string; minResponseMs?: number } = {},
+): Promise<{ sent: boolean; link?: string }> {
+  const started = performance.now();
+  const result = await requestMagicLinkInner(db, email, opts);
+  const wait = (opts.minResponseMs ?? MAGIC_LINK_MIN_RESPONSE_MS) - (performance.now() - started);
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  return result;
+}
+
+/** A well-formed v4 uuid no user has, for the decoy lookup on the no-account path. */
+const NO_USER_ID = "00000000-0000-4000-8000-000000000000";
+
+async function requestMagicLinkInner(db: Db, email: string, opts: { next?: string }): Promise<{ sent: boolean; link?: string }> {
   const addr = normaliseEmail(email);
   if (!addr || !addr.includes("@")) return { sent: true };
   const [user] = await db.select().from(s.users).where(eq(s.users.email, addr)).limit(1);
-  if (!user || !user.active) return { sent: true };
 
   const now = new Date();
+  // Done for every address, known or not, so both paths do the same work up to the send.
   const [{ live }] = await db
     .select({ live: sql<number>`count(*)` })
     .from(s.magicLinks)
-    .where(and(eq(s.magicLinks.userId, user.id), isNull(s.magicLinks.usedAt), gt(s.magicLinks.expiresAt, now)));
+    .where(and(eq(s.magicLinks.userId, user?.active ? user.id : NO_USER_ID), isNull(s.magicLinks.usedAt), gt(s.magicLinks.expiresAt, now)));
+  const token = randomToken();
+  const tokenHash = magicTokenHash(token);
+  if (!user || !user.active) return { sent: true };
   if (Number(live) >= MAX_LIVE_LINKS) return { sent: true };
 
-  const token = randomToken();
   const expiresAt = new Date(now.getTime() + MAGIC_LINK_TTL_MS);
-  await db.insert(s.magicLinks).values({ userId: user.id, tokenHash: magicTokenHash(token), expiresAt });
+  await db.insert(s.magicLinks).values({ userId: user.id, tokenHash, expiresAt });
   const link = magicLinkUrl(token, opts.next);
 
   const [org] = await db.select({ name: s.organisations.name }).from(s.organisations).limit(1);

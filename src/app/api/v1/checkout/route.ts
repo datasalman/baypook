@@ -1,5 +1,5 @@
 import { getDb } from "@/db";
-import { json, preflight, readJson, withApi } from "@/lib/api";
+import { DB_RATE_LIMITS, json, preflight, readJson, withApi } from "@/lib/api";
 import { checkoutBodySchema } from "@/lib/validation";
 import { startCheckout } from "@/server/checkout";
 
@@ -21,4 +21,4 @@ export const POST = withApi(async (req) => {
     origin: req.headers.get("origin"),
   });
   return json(result);
-});
+}, { dbRateLimit: DB_RATE_LIMITS.checkout });

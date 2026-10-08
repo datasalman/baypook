@@ -15,12 +15,21 @@
  *   cutoff − 12 months are deleted.
  *
  * Events already pushed to Google Calendar are not rewritten.
+ *
+ * Housekeeping on every run, whatever the retention period:
+ * - `rate_limits` rows whose window started more than a day ago,
+ * - sign-in links that were used or have expired,
+ * - admin sessions that have expired or sat idle past the idle timeout.
  */
-import { and, eq, isNull, lt, notExists } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, notExists, or, sql } from "drizzle-orm";
 import { subMonths } from "date-fns";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { getOrganisation } from "./org";
+import { SESSION_IDLE_TIMEOUT_MS } from "./auth";
+
+/** `rate_limits` rows are kept this long after their window started. */
+export const RATE_LIMIT_ROW_TTL_MS = 24 * 60 * 60_000;
 
 /** Extra months the audit log is kept beyond the retention period. */
 export const AUDIT_EXTRA_MONTHS = 12;
@@ -34,6 +43,9 @@ export type RetentionSummary = {
   notificationsDeleted: number;
   calendarLogDeleted: number;
   auditDeleted: number;
+  rateLimitsDeleted: number;
+  magicLinksDeleted: number;
+  adminSessionsDeleted: number;
 };
 
 /** The placeholder e-mail an anonymised customer gets: unique, undeliverable. */
@@ -87,6 +99,25 @@ export async function retentionJob(db: DbOrTx, now: Date = new Date()): Promise<
       .returning({ id: s.calendarLog.id });
     const audit = await tx.delete(s.auditLog).where(lt(s.auditLog.createdAt, auditCutoff)).returning({ id: s.auditLog.id });
 
+    const rateLimits = await tx
+      .delete(s.rateLimits)
+      .where(lt(s.rateLimits.windowStart, new Date(now.getTime() - RATE_LIMIT_ROW_TTL_MS)))
+      .returning({ key: s.rateLimits.key });
+    const magicLinks = await tx
+      .delete(s.magicLinks)
+      .where(or(isNotNull(s.magicLinks.usedAt), lt(s.magicLinks.expiresAt, now)))
+      .returning({ id: s.magicLinks.id });
+    const idleSince = new Date(now.getTime() - SESSION_IDLE_TIMEOUT_MS).toISOString();
+    const adminSessions = await tx
+      .delete(s.sessionsAuth)
+      .where(
+        or(
+          lt(s.sessionsAuth.expiresAt, now),
+          sql`coalesce(${s.sessionsAuth.lastSeenAt}, ${s.sessionsAuth.createdAt}) < ${idleSince}::timestamptz`,
+        ),
+      )
+      .returning({ id: s.sessionsAuth.id });
+
     return {
       retentionMonths: months,
       cutoff: cutoff.toISOString(),
@@ -96,6 +127,9 @@ export async function retentionJob(db: DbOrTx, now: Date = new Date()): Promise<
       notificationsDeleted: notifications.length,
       calendarLogDeleted: calendar.length,
       auditDeleted: audit.length,
+      rateLimitsDeleted: rateLimits.length,
+      magicLinksDeleted: magicLinks.length,
+      adminSessionsDeleted: adminSessions.length,
     };
   });
 }

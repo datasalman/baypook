@@ -1,6 +1,6 @@
 # BayPook public API (`/api/v1`)
 
-JSON over HTTPS. CORS allow-list from `ALLOWED_ORIGINS` (plus `http://localhost:3000` and `:3100`). Lightly rate-limited per IP.
+JSON over HTTPS. CORS allow-list from `ALLOWED_ORIGINS` (demo mode also allows `http://localhost:3000` and `:3100`). Rate-limited per client (an HMAC of the IP): 120 reads or 20 writes a minute per instance, and shared limits of 10 holds, 10 checkouts and 60 quotes a minute; refusals are `RATE_LIMITED` with a `Retry-After` header. A client may keep at most 3 holds at once; a 4th returns `LIMIT` with `limit: 3`.
 All money is integer pence. All instants are ISO 8601 UTC strings. Dates are `YYYY-MM-DD` in the venue's timezone (Europe/London).
 
 ## Errors

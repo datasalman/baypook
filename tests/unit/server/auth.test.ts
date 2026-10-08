@@ -14,6 +14,7 @@ import {
   magicTokenHash,
   requestMagicLink,
   requireVenueAccess,
+  SESSION_IDLE_TIMEOUT_MS,
   roleAt,
   safeNextPath,
   sha256,
@@ -111,6 +112,39 @@ describe("magic links", () => {
     const [id] = demo.sessionToken.split(".");
     expect(await getUserBySessionToken(db, `${id}.${"y".repeat(43)}`)).toBeNull();
     expect((await getUserBySessionToken(db, demo.sessionToken))?.email).toBe("manager.southwoodford@demo.baypook");
+  });
+
+  it("rejects and deletes a session idle for more than 14 days", async () => {
+    const demo = await signInAsDemoUser(db, "staff.lakeside@demo.baypook");
+    const [id] = demo.sessionToken.split(".");
+    const start = Date.now();
+    const day = 24 * 3600_000;
+
+    // Used after 13 days: still valid, and lastSeenAt moves on.
+    const later = new Date(start + 13 * day);
+    expect((await getUserBySessionToken(db, demo.sessionToken, later))?.email).toBe("staff.lakeside@demo.baypook");
+    const [row] = await db.select().from(s.sessionsAuth).where(eq(s.sessionsAuth.id, id));
+    expect(row.lastSeenAt?.getTime()).toBe(later.getTime());
+
+    // 26 days after sign-in but only 13 idle: still valid.
+    expect(await getUserBySessionToken(db, demo.sessionToken, new Date(later.getTime() + 13 * day))).not.toBeNull();
+
+    // A session left alone for more than 14 days: refused and the row is gone, though its 30 days are not up.
+    const fresh = await signInAsDemoUser(db, "staff.lakeside@demo.baypook");
+    const [freshId] = fresh.sessionToken.split(".");
+    await db.update(s.sessionsAuth).set({ lastSeenAt: new Date(start + 2 * day) }).where(eq(s.sessionsAuth.id, freshId));
+    const check = new Date(start + 2 * day + SESSION_IDLE_TIMEOUT_MS + 1000);
+    expect(await getUserBySessionToken(db, fresh.sessionToken, check)).toBeNull();
+    expect(await db.select().from(s.sessionsAuth).where(eq(s.sessionsAuth.id, freshId))).toHaveLength(0);
+  });
+
+  it("takes as long for an unknown email as for a known one", async () => {
+    const t0 = performance.now();
+    expect(await requestMagicLink(db, "nobody@example.com", { minResponseMs: 120 })).toEqual({ sent: true });
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(115);
+    const t1 = performance.now();
+    expect((await requestMagicLink(db, "owner@demo.baypook", { minResponseMs: 120 })).sent).toBe(true);
+    expect(performance.now() - t1).toBeGreaterThanOrEqual(115);
   });
 
   it("signs in demo users only", async () => {
