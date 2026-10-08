@@ -4,7 +4,9 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1. Sp
 
 ## Current task
 
-Stages 1–3 in flight. Committed: A core/holds, B email/ics/notifications/calendar, C admin shell/auth/Today/Week/PWA, D2 `/book` + client, F1 catalogue/settings admin, F2 reports/connections/outbox/calendar-log/jobs/users/audit. Running: D1 API + checkout + webhooks + bookings service + demo checkout (files on disk, uncommitted: `src/server/bookings|checkout|webhooks|jobs|customers.ts`, `src/lib/api.ts`, `src/lib/validation.ts`, `src/app/api/**`, `src/app/demo/**`, `tests/api/**`), G reminders/retention jobs + import-wix + INTEGRATION.md + Playwright. Queued: E booking list/detail/actions + manual booking + customers admin (after D1).
+Stages 2–3 finishing. Running: E (bookings list/detail/actions, manual booking, customers admin), G (reminders/retention jobs, import-wix, INTEGRATION.md, Playwright). Then: director walkthrough of the acceptance steps in demo mode, stage 4 docs, final report.
+
+Previously: Committed: A core/holds, B email/ics/notifications/calendar, C admin shell/auth/Today/Week/PWA, D2 `/book` + client, F1 catalogue/settings admin, F2 reports/connections/outbox/calendar-log/jobs/users/audit. Running: D1 API + checkout + webhooks + bookings service + demo checkout (files on disk, uncommitted: `src/server/bookings|checkout|webhooks|jobs|customers.ts`, `src/lib/api.ts`, `src/lib/validation.ts`, `src/app/api/**`, `src/app/demo/**`, `tests/api/**`), G reminders/retention jobs + import-wix + INTEGRATION.md + Playwright. Queued: E booking list/detail/actions + manual booking + customers admin (after D1).
 
 ## Half-finished
 
@@ -35,31 +37,31 @@ D1 and G running (see above). After D1: launch E, run the full demo walkthrough 
 
 ### Stage 1: booking end to end (target: hour 3)
 - [done] `src/core`: time, overlap, timetable materialisation, availability (sessions + slot starts), pricing, holds, state machine, tests (100% line coverage)
-- [todo] Public API: venues, services, availability, holds, checkout, booking summary; error codes; CORS; rate limit
-- [todo] Stripe webhook per venue; processed events; charge.refunded, dispute, session.expired
-- [todo] Demo fake checkout page (Pay / Decline)
+- [done] Public API: venues, services, availability, holds, checkout, booking summary; error codes; CORS; rate limit
+- [done] Stripe webhook per venue; processed events; charge.refunded, dispute, session.expired
+- [done] Demo fake checkout page (Pay / Decline)
 - [done] Confirmation email with `.ics` (service + templates; wired to checkout by D1)
-- [todo] Reference booking page `/book`
-- [todo] Hold expiry cron + admin "Run now"
+- [done] Reference booking page `/book`
+- [done] Hold expiry cron + admin "Run now"
 
 ### Stage 2: admin (target: hour 6)
-- [todo] Auth: magic link, roles, venue scoping, demo "Sign in as owner"
-- [todo] Today, Week calendar, venue switcher
-- [todo] Booking detail + actions (cancel ± refund, move, change counts, resend, mark paid in store, no-show, note)
-- [todo] New manual booking
-- [todo] Customers
-- [todo] Catalogue (services, options, add-ons, timetable rules, exceptions, blocks)
-- [todo] Reports + CSV
-- [todo] Settings (org, venues, policies, terms/waiver versions, email templates, retention)
-- [todo] Connections, Outbox, Calendar log, Jobs, Users & invites, Audit log
-- [todo] PWA manifest + icons
+- [done] Auth: magic link, roles, venue scoping, demo "Sign in as owner"
+- [done] Today, Week calendar, venue switcher
+- [doing] Booking detail + actions (cancel ± refund, move, change counts, resend, mark paid in store, no-show, note) (service done; admin UI by agent E)
+- [doing] New manual booking (service done; UI by agent E)
+- [doing] Customers (service done; UI by agent E)
+- [done] Catalogue (services, options, add-ons, timetable rules, exceptions, blocks)
+- [done] Reports + CSV
+- [done] Settings (org, venues, policies, terms/waiver versions, email templates, retention)
+- [done] Connections, Outbox, Calendar log, Jobs, Users & invites, Audit log
+- [done] PWA manifest + icons
 
 ### Stage 3: mirror, jobs, integration (target: hour 7)
-- [todo] Google Calendar adapter
-- [todo] Reminders cron, retention cron
-- [todo] `scripts/import-wix.ts`
-- [todo] `src/client/client.ts`, `INTEGRATION.md`
-- [todo] Playwright smoke test
+- [done] Google Calendar adapter
+- [doing] Reminders cron, retention cron (agent G)
+- [doing] `scripts/import-wix.ts` (agent G)
+- [doing] `src/client/client.ts`, `INTEGRATION.md` (agent G)
+- [doing] Playwright smoke test (agent G)
 
 ### Stage 4: hand-over (final hour)
 - [todo] README, SETUP, DECISIONS, `.env.example`, seed refresh, STATE complete, final report
