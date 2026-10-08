@@ -69,6 +69,9 @@ Re-runs the availability check inside one transaction and holds the places/slot 
 ```
 Errors: `GONE`, `LIMIT`, `INVALID`, `NOT_FOUND`, `UNAVAILABLE`.
 
+### `DELETE /api/v1/holds/:id`
+Releases a hold early (the customer changed their mind). Always `{ "released": true }` (idempotent; unknown ids too).
+
 ### `POST /api/v1/checkout`
 Body:
 ```json
@@ -96,8 +99,9 @@ Errors: `HOLD_EXPIRED`, `INVALID`, `UNAVAILABLE`, `NOT_FOUND`.
   "startsAt": "…", "endsAt": "…",
   "lines": [ { "name": "Slime Workshop", "qty": 2, "unitPence": 1700, "totalPence": 3400 } ],
   "addOns": [], "totalPence": 3400, "paidPence": 3400,
-  "customer": { "firstName": "Amina" }, "inStoreNote": null, "paymentMethod": "online_card" }
+  "customer": { "firstName": "Amina" }, "inStoreNote": null, "paymentMethod": "online_card", "timezone": "Europe/London" }
 ```
+`addOns` entries have the same shape as `lines` (`name`, `qty`, `unitPence`, `totalPence`). `inStoreNote` is a string (the notes joined with a space) or null.
 Token is the booking's secret token (not the reference). 404 for unknown tokens.
 
 ## Quote
