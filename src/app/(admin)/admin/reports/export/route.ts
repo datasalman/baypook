@@ -1,12 +1,14 @@
 /**
  * CSV export: GET /admin/reports/export?kind=takings|bookings|customers&venue=<id>|all&from=&to=
  * Signed-in users only, scoped to the venues they can see. UTF-8 with BOM, RFC 4180.
+ * Takings and customers need an owner or a manager of every venue in scope; staff
+ * get the bookings export without the email and phone columns.
  */
 import { isValidDateStr, localDate } from "@/core/time";
 import { getDb } from "@/db";
 import { requireUser, visibleVenueIds } from "@/server/auth";
 import { getOrganisation, listVenues } from "@/server/org";
-import { CSV_BOM, bookingsCsv, customersCsv, takingsByDay, takingsCsvRows, toCsv } from "@/server/reports";
+import { CSV_BOM, bookingsCsv, canSeeMoneyAndContacts, customersCsv, takingsByDay, takingsCsvRows, toCsv } from "@/server/reports";
 
 export const dynamic = "force-dynamic";
 
@@ -38,10 +40,8 @@ export async function GET(req: Request): Promise<Response> {
   else return bad("You do not have access to that venue.", 403);
 
   // Contact details and money leave the building only with an owner or a manager of every venue in scope.
-  if (kind !== "bookings" && !user.isOwner) {
-    const managesAll = venueIds.length > 0 && venueIds.every((id) => user.venues.some((v) => v.venueId === id && v.role === "manager"));
-    if (!managesAll) return bad("Only owners and managers can export this.", 403);
-  }
+  const full = canSeeMoneyAndContacts(user, venueIds);
+  if (kind !== "bookings" && !full) return bad("Only owners and managers can export this.", 403);
 
   const fromRaw = url.searchParams.get("from");
   const toRaw = url.searchParams.get("to");
@@ -54,7 +54,7 @@ export async function GET(req: Request): Promise<Response> {
     const report = await takingsByDay(db, { venueIds, from: from ?? today, to: to ?? from ?? today, tz });
     rows = takingsCsvRows(report);
   } else if (kind === "bookings") {
-    rows = await bookingsCsv(db, { venueIds, tz, from, to });
+    rows = await bookingsCsv(db, { venueIds, tz, from, to, includeContact: full });
   } else {
     rows = await customersCsv(db, { venueIds, tz, allCustomers: user.isOwner && venueParam === "all" });
   }

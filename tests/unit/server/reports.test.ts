@@ -187,15 +187,23 @@ describe("other reports", () => {
   });
 
   it("exports bookings and customers with a header row", async () => {
-    const rows = await bookingsCsv(db, { venueIds: [sw.id], tz: TZ, from: "2026-10-12", to: "2026-10-12" });
+    const rows = await bookingsCsv(db, { venueIds: [sw.id], tz: TZ, from: "2026-10-12", to: "2026-10-12", includeContact: true });
+    expect(rows[0].slice(6, 9)).toEqual(["Customer name", "Email", "Phone"]);
     expect(rows[0][0]).toBe("Reference");
     expect(rows.slice(1).map((r) => r[0])).toEqual(["BP-AAA01", "BP-AAA02"]);
     expect(rows[1][3]).toBe("2026-10-12 11:00");
     expect(rows[1][10]).toBe("2 x Slime Workshop");
     expect(rows[1][11]).toBe("34.00");
 
-    const all = await bookingsCsv(db, { venueIds: [sw.id, lk.id], tz: TZ });
+    const all = await bookingsCsv(db, { venueIds: [sw.id, lk.id], tz: TZ, includeContact: true });
     expect(all.length).toBe(1 + 6);
+
+    // Staff: no email or phone columns.
+    const staff = await bookingsCsv(db, { venueIds: [sw.id], tz: TZ, from: "2026-10-12", to: "2026-10-12", includeContact: false });
+    expect(staff[0]).not.toContain("Email");
+    expect(staff[0]).not.toContain("Phone");
+    expect(staff[0].length).toBe(rows[0].length - 2);
+    expect(staff[1].join(",")).not.toMatch(/@example\.com|7000 000000/);
 
     const cust = await customersCsv(db, { venueIds: [lk.id], tz: TZ });
     expect(cust.length).toBe(1 + 2);

@@ -187,14 +187,14 @@ export async function addRulesAction(fd: FormData): Promise<void> {
 export async function updateRuleAction(fd: FormData): Promise<void> {
   await runAdminAction(backPath(fd, "/admin/catalogue"), async ({ db, user }) => {
     const r = await updateTimetableRuleCapacity(db, user, str(fd, "ruleId") ?? "", num(fd, "capacity"));
-    return `${r.startTime} now has ${plural(r.capacity, "place", "places")}.`;
+    return r.message ?? `${r.startTime} now has ${plural(r.capacity, "place", "places")}.`;
   });
 }
 
 export async function deleteRuleAction(fd: FormData): Promise<void> {
   await runAdminAction(backPath(fd, "/admin/catalogue"), async ({ db, user }) => {
-    await deleteTimetableRule(db, user, str(fd, "ruleId") ?? "");
-    return "Time removed. Sessions with bookings are kept.";
+    const d = await deleteTimetableRule(db, user, str(fd, "ruleId") ?? "");
+    return d.message ?? "Time removed. Sessions with bookings are kept.";
   });
 }
 
@@ -219,9 +219,7 @@ export async function addExceptionAction(fd: FormData): Promise<void> {
       capacity: optNum(fd, "capacity"),
       note: str(fd, "note"),
     });
-    return r.keptWithBookings
-      ? `Saved. ${plural(r.keptWithBookings, "session has bookings and was", "sessions have bookings and were")} kept: cancel or move them from Sessions.`
-      : "Saved.";
+    return r.message ?? "Saved.";
   });
 }
 

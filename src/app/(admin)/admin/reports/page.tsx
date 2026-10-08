@@ -4,6 +4,7 @@ import { fmtDayShort, fmtLocal, fmtPence, isValidDateStr, startOfLocalDay } from
 import { getAdminContext } from "@/server/venue-scope";
 import {
   RANGE_PRESETS,
+  canSeeMoneyAndContacts,
   isRangePreset,
   noShows,
   outstanding,
@@ -45,8 +46,10 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
 
   const venueIds = ctx.selectedVenues.map((v) => v.id);
   const range = { venueIds, from, to, tz };
+  // Staff see the reports without takings and without the takings and customers downloads.
+  const full = canSeeMoneyAndContacts(ctx.user, venueIds);
   const [takings, upcoming, noShowList, refunds, owed] = await Promise.all([
-    takingsByDay(ctx.db, range),
+    full ? takingsByDay(ctx.db, range) : null,
     upcomingSummary(ctx.db, { venueIds }),
     noShows(ctx.db, range),
     refundsInRange(ctx.db, range),
@@ -99,99 +102,103 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
         </form>
       </details>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Online" value={fmtPence(takings.totals.onlinePence)} />
-        <Stat
-          label="In store"
-          value={fmtPence(takings.totals.inStorePence)}
-          hint={`Cash ${fmtPence(takings.totals.cashPence)}, card machine ${fmtPence(takings.totals.cardMachinePence)}`}
-        />
-        <Stat label="Refunds" value={fmtPence(takings.totals.refundsPence)} />
-        <Stat label="Net" value={fmtPence(takings.totals.netPence)} />
-      </div>
+      {takings ? (
+        <>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Stat label="Online" value={fmtPence(takings.totals.onlinePence)} />
+            <Stat
+              label="In store"
+              value={fmtPence(takings.totals.inStorePence)}
+              hint={`Cash ${fmtPence(takings.totals.cashPence)}, card machine ${fmtPence(takings.totals.cardMachinePence)}`}
+            />
+            <Stat label="Refunds" value={fmtPence(takings.totals.refundsPence)} />
+            <Stat label="Net" value={fmtPence(takings.totals.netPence)} />
+          </div>
 
-      <SectionTitle
-        aside={
-          <a href={exportHref("takings", true)} download className="inline-flex min-h-11 items-center">
-            Download CSV
-          </a>
-        }
-      >
-        Takings by day
-      </SectionTitle>
-      {takings.rows.length ? (
-        <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
-          <table className="w-full border-collapse text-base">
-            <thead className="border-b border-line bg-canvas">
-              <tr>
-                <th scope="col" className={th}>
-                  Day
-                </th>
-                {many ? (
-                  <th scope="col" className={th}>
-                    Venue
-                  </th>
-                ) : null}
-                <th scope="col" className={cn(th, "text-right")}>
-                  Online
-                </th>
-                <th scope="col" className={cn(th, "text-right")}>
-                  In store
-                </th>
-                <th scope="col" className={cn(th, "text-right")}>
-                  Refunds
-                </th>
-                <th scope="col" className={cn(th, "text-right")}>
-                  Net
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {takings.rows.map((r) => (
-                <tr key={`${r.date}-${r.venueId}`}>
-                  <th scope="row" className={cn(td, "text-left font-medium")}>
-                    {fmtDayShort(startOfLocalDay(r.date, tz), tz)}
-                  </th>
-                  {many ? <td className={td}>{r.venueName}</td> : null}
-                  <td className={cn(td, "text-right")}>{fmtPence(r.onlinePence)}</td>
-                  <td className={cn(td, "text-right")}>
-                    {fmtPence(r.inStorePence)}
-                    {r.inStorePence ? (
-                      <span className="block text-sm font-normal text-muted">
-                        Cash {fmtPence(r.cashPence)}, card machine {fmtPence(r.cardMachinePence)}
-                      </span>
+          <SectionTitle
+            aside={
+              <a href={exportHref("takings", true)} download className="inline-flex min-h-11 items-center">
+                Download CSV
+              </a>
+            }
+          >
+            Takings by day
+          </SectionTitle>
+          {takings.rows.length ? (
+            <div className="overflow-x-auto rounded-2xl border border-line bg-surface">
+              <table className="w-full border-collapse text-base">
+                <thead className="border-b border-line bg-canvas">
+                  <tr>
+                    <th scope="col" className={th}>
+                      Day
+                    </th>
+                    {many ? (
+                      <th scope="col" className={th}>
+                        Venue
+                      </th>
                     ) : null}
-                  </td>
-                  <td className={cn(td, "text-right")}>{r.refundsPence ? `-${fmtPence(r.refundsPence)}` : fmtPence(0)}</td>
-                  <td className={cn(td, "text-right font-semibold")}>{fmtPence(r.netPence)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot className="border-t-2 border-line bg-canvas font-bold">
-              <tr>
-                <th scope="row" className={cn(td, "text-left")} colSpan={many ? 2 : 1}>
-                  Total
-                </th>
-                <td className={cn(td, "text-right")}>{fmtPence(takings.totals.onlinePence)}</td>
-                <td className={cn(td, "text-right")}>
-                  {fmtPence(takings.totals.inStorePence)}
-                  {takings.totals.inStorePence ? (
-                    <span className="block text-sm font-normal text-muted">
-                      Cash {fmtPence(takings.totals.cashPence)}, card machine {fmtPence(takings.totals.cardMachinePence)}
-                    </span>
-                  ) : null}
-                </td>
-                <td className={cn(td, "text-right")}>
-                  {takings.totals.refundsPence ? `-${fmtPence(takings.totals.refundsPence)}` : fmtPence(0)}
-                </td>
-                <td className={cn(td, "text-right")}>{fmtPence(takings.totals.netPence)}</td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      ) : (
-        <EmptyState title="No money in or out on these dates" />
-      )}
+                    <th scope="col" className={cn(th, "text-right")}>
+                      Online
+                    </th>
+                    <th scope="col" className={cn(th, "text-right")}>
+                      In store
+                    </th>
+                    <th scope="col" className={cn(th, "text-right")}>
+                      Refunds
+                    </th>
+                    <th scope="col" className={cn(th, "text-right")}>
+                      Net
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {takings.rows.map((r) => (
+                    <tr key={`${r.date}-${r.venueId}`}>
+                      <th scope="row" className={cn(td, "text-left font-medium")}>
+                        {fmtDayShort(startOfLocalDay(r.date, tz), tz)}
+                      </th>
+                      {many ? <td className={td}>{r.venueName}</td> : null}
+                      <td className={cn(td, "text-right")}>{fmtPence(r.onlinePence)}</td>
+                      <td className={cn(td, "text-right")}>
+                        {fmtPence(r.inStorePence)}
+                        {r.inStorePence ? (
+                          <span className="block text-sm font-normal text-muted">
+                            Cash {fmtPence(r.cashPence)}, card machine {fmtPence(r.cardMachinePence)}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className={cn(td, "text-right")}>{r.refundsPence ? `-${fmtPence(r.refundsPence)}` : fmtPence(0)}</td>
+                      <td className={cn(td, "text-right font-semibold")}>{fmtPence(r.netPence)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="border-t-2 border-line bg-canvas font-bold">
+                  <tr>
+                    <th scope="row" className={cn(td, "text-left")} colSpan={many ? 2 : 1}>
+                      Total
+                    </th>
+                    <td className={cn(td, "text-right")}>{fmtPence(takings.totals.onlinePence)}</td>
+                    <td className={cn(td, "text-right")}>
+                      {fmtPence(takings.totals.inStorePence)}
+                      {takings.totals.inStorePence ? (
+                        <span className="block text-sm font-normal text-muted">
+                          Cash {fmtPence(takings.totals.cashPence)}, card machine {fmtPence(takings.totals.cardMachinePence)}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className={cn(td, "text-right")}>
+                      {takings.totals.refundsPence ? `-${fmtPence(takings.totals.refundsPence)}` : fmtPence(0)}
+                    </td>
+                    <td className={cn(td, "text-right")}>{fmtPence(takings.totals.netPence)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          ) : (
+            <EmptyState title="No money in or out on these dates" />
+          )}
+        </>
+      ) : null}
 
       <SectionTitle aside="Next 14 days, confirmed">Upcoming bookings</SectionTitle>
       {upcoming.length ? (
@@ -259,6 +266,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
                   <span className="block text-sm text-muted">
                     {fmtLocal(r.createdAt, "EEE d MMM, HH:mm", tz)} · by {r.byName}
                     {many ? ` · ${r.venueName}` : ""}
+                    {r.wixPayment ? " · Wix payment, not in takings" : ""}
                     {r.reason ? ` · ${r.reason}` : ""}
                   </span>
                 </span>
@@ -310,13 +318,18 @@ export default async function ReportsPage({ searchParams }: { searchParams: Sear
         <a href={exportHref("bookings", false)} download className={buttonClasses({ variant: "secondary" })}>
           Every booking
         </a>
-        <a href={exportHref("customers", false)} download className={buttonClasses({ variant: "secondary" })}>
-          Every customer
-        </a>
-        <a href={exportHref("takings", true)} download className={buttonClasses({ variant: "secondary" })}>
-          Takings on these dates
-        </a>
+        {full ? (
+          <>
+            <a href={exportHref("customers", false)} download className={buttonClasses({ variant: "secondary" })}>
+              Every customer
+            </a>
+            <a href={exportHref("takings", true)} download className={buttonClasses({ variant: "secondary" })}>
+              Takings on these dates
+            </a>
+          </>
+        ) : null}
       </div>
+      {full ? null : <p className="mt-3 text-sm text-muted">Booking downloads leave out email addresses and phone numbers.</p>}
     </>
   );
 }

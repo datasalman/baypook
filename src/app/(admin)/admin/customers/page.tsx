@@ -4,7 +4,7 @@ import { getAdminContext } from "@/server/venue-scope";
 import { Button, Card, EmptyState, Field, Input, PageHeader } from "@/components/ui";
 import type { SearchParams } from "../_lib/dates";
 import { customerName, hasRealEmail } from "../bookings/_lib/labels";
-import { visibleCustomerIds } from "./_lib/customers";
+import { customerVenueScope } from "./_lib/customers";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Customers" };
@@ -17,14 +17,8 @@ export default async function CustomersPage({ searchParams }: { searchParams: Se
   const raw = Array.isArray(sp.q) ? sp.q[0] : sp.q;
   const q = (raw ?? "").trim().slice(0, 100);
 
-  // Staff and managers see parents who booked at their venues; fetch extra to fill the page after that filter.
-  const rows = await searchCustomers(ctx.db, { q: q || undefined, limit: ctx.user.isOwner ? SHOW : 200 });
-  const visible = await visibleCustomerIds(
-    ctx.db,
-    ctx.user,
-    rows.map((r) => r.id),
-  );
-  const list = rows.filter((r) => visible.has(r.id)).slice(0, SHOW);
+  // Staff and managers see parents who booked at their venues (filtered in the query, before the limit).
+  const list = await searchCustomers(ctx.db, { q: q || undefined, limit: SHOW, venueIds: customerVenueScope(ctx.user) });
 
   return (
     <>

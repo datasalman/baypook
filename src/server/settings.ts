@@ -3,7 +3,7 @@
  * text with versions, and email templates. Owner only; every write is audited.
  */
 import { z } from "zod";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import type { OpeningHours } from "@/db/schema";
@@ -219,10 +219,34 @@ async function syncOpeningHoursFlag(db: DbOrTx): Promise<void> {
   }
 }
 
-export async function updateVenue(db: DbOrTx, user: CurrentUser, venueId: string, input: UpdateVenueInput): Promise<s.Venue> {
+/** Pending and confirmed bookings at a venue that have not started yet. */
+async function countFutureBookings(db: DbOrTx, venueId: string, now: Date): Promise<number> {
+  const [{ n }] = await db
+    .select({ n: count() })
+    .from(s.bookings)
+    .where(and(eq(s.bookings.venueId, venueId), inArray(s.bookings.status, ["pending", "confirmed"]), gte(s.bookings.startsAt, now)));
+  return Number(n);
+}
+
+/**
+ * Save a venue. Status and opening date are checked together with what is already
+ * saved (an opening venue needs an opening date). Closing a venue keeps its
+ * bookings: `futureBookings` counts them and `message` (the flash text) says so.
+ */
+export async function updateVenue(
+  db: DbOrTx,
+  user: CurrentUser,
+  venueId: string,
+  input: UpdateVenueInput,
+  opts: { now?: Date } = {},
+): Promise<s.Venue & { futureBookings: number; message: string }> {
   assertOwner(user);
+  const now = opts.now ?? new Date();
   const before = await loadVenue(db, venueId);
   const patch = defined(parseInput(updateVenueSchema, input));
+  const status = patch.status ?? before.status;
+  const opensAt = patch.opensAt !== undefined ? patch.opensAt : before.opensAt;
+  if (status === "opening" && !opensAt) throw new AdminError("Opens on: an opening venue needs an opening date.");
   const after = await db.transaction(async (tx) => {
     const [row] = await tx
       .update(s.venues)
@@ -233,8 +257,14 @@ export async function updateVenue(db: DbOrTx, user: CurrentUser, venueId: string
     return row;
   });
   await syncOpeningHoursFlag(db);
-  if (patch.status !== undefined || patch.opensAt !== undefined) await refreshVenueSessions(db, venueId);
-  return after;
+  if (patch.status !== undefined || patch.opensAt !== undefined) await refreshVenueSessions(db, venueId, now);
+  const futureBookings = after.status === "closed" ? await countFutureBookings(db, venueId, now) : 0;
+  const message = `${after.name} saved.${
+    futureBookings
+      ? ` It is closed to new bookings. ${futureBookings} ${futureBookings === 1 ? "booking is" : "bookings are"} still coming up and ${futureBookings === 1 ? "is" : "are"} kept: move or cancel ${futureBookings === 1 ? "it" : "them"}.`
+      : ""
+  }`;
+  return { ...after, futureBookings, message };
 }
 
 export const DEFAULT_NEW_VENUE_HOURS: OpeningHours = {

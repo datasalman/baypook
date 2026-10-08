@@ -99,7 +99,7 @@ export async function saveVenueAction(_prev: FormActionState, fd: FormData): Pro
       defaultCutoffMinutes: num(fd, "defaultCutoffMinutes"),
       sortOrder: num(fd, "sortOrder"),
     });
-    return `${v.name} saved.`;
+    return v.message ?? `${v.name} saved.`;
   });
 }
 

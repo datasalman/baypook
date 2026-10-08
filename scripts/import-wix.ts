@@ -28,7 +28,14 @@
  * notes of bookings imported before that column existed) are skipped, so the
  * import can be run again safely.
  * Capacity and room rules apply (a clash fails the row); lead time and cut-off do not.
+ *
+ * A dry run (`--dry-run`) does everything a real run would inside one database
+ * transaction that is rolled back at the end: each row books its places in that
+ * transaction, so two rows of the same file that clash are reported exactly as a
+ * real run would report them, and nothing is saved (no sessions either). No email
+ * or calendar event is sent on a dry run.
  */
+import { randomUUID } from "node:crypto";
 import { and, eq, ilike } from "drizzle-orm";
 import type { DbOrTx } from "../src/db";
 import * as s from "../src/db/schema";
@@ -40,13 +47,14 @@ import { createManualBooking } from "../src/server/bookings";
 import { quoteForService } from "../src/server/quote";
 import { assertBookable } from "../src/server/availability";
 import { ensureSessions } from "../src/server/sessions";
+import { findOrCreateCustomer } from "../src/server/customers";
 
 // ---------- CSV ----------
 
 /**
  * A small RFC 4180 parser: commas, double-quoted fields with "" escapes and
  * embedded commas/newlines, CRLF or LF line ends, an optional UTF-8 BOM.
- * Blank lines are dropped.
+ * Blank lines, and rows whose cells are all blank (",,,"), are dropped.
  */
 export function parseCsv(text: string): string[][] {
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
@@ -57,7 +65,7 @@ export function parseCsv(text: string): string[][] {
   let i = 0;
   const endRow = () => {
     row.push(field);
-    if (!(row.length === 1 && row[0].trim() === "")) rows.push(row);
+    if (row.some((cell) => cell.trim() !== "")) rows.push(row);
     row = [];
     field = "";
   };
@@ -425,13 +433,41 @@ async function findSessionId(db: DbOrTx, plan: PlannedBooking, tz: string): Prom
   return session.id;
 }
 
-/** Import every row. Never throws for a bad row; each row gets an outcome. */
+/** Thrown to roll the dry run's transaction back once every row has been tried. */
+class DryRunRollback extends Error {}
+
+type RunContext = { opts: ImportOptions; now: Date; tz: string; organisationId: string };
+
+/**
+ * Import every row. Never throws for a bad row; each row gets an outcome. A dry run
+ * runs the same checks inside a transaction that is rolled back, booking each row's
+ * places as it goes so clashes within the file are found, and saves nothing.
+ */
 export async function importWix(db: DbOrTx, csvText: string, opts: ImportOptions): Promise<ImportOutcome[]> {
   const now = opts.now ?? new Date();
   const org = await getOrganisation(db);
-  const tz = org.timezone || DEFAULT_TZ;
+  const ctx: RunContext = { opts, now, tz: org.timezone || DEFAULT_TZ, organisationId: org.id };
   const { rows, problems } = readWixCsv(csvText);
   const outcomes: ImportOutcome[] = problems.map((p) => ({ ...p, result: "failed" }));
+
+  if (!opts.dryRun) {
+    outcomes.push(...(await importRows(db, rows, ctx)));
+  } else {
+    try {
+      await db.transaction(async (tx) => {
+        outcomes.push(...(await importRows(tx, rows, ctx)));
+        throw new DryRunRollback();
+      });
+    } catch (e) {
+      if (!(e instanceof DryRunRollback)) throw e;
+    }
+  }
+  return outcomes.sort((a, b) => a.line - b.line);
+}
+
+async function importRows(db: DbOrTx, rows: WixRow[], ctx: RunContext): Promise<ImportOutcome[]> {
+  const { opts, now, tz } = ctx;
+  const outcomes: ImportOutcome[] = [];
   const catalogue = await loadCatalogue(db);
   const seen = new Set<string>();
 
@@ -454,26 +490,19 @@ export async function importWix(db: DbOrTx, csvText: string, opts: ImportOptions
       const plan = planRow(row, catalogue, tz);
       if (plan.startsAt.getTime() <= now.getTime()) throw new ImportRowError("That booking has already started; only future bookings are imported.");
       const q = quoteForService(null, { service: plan.service, venue: plan.venue, lines: plan.lines, addOns: plan.addOns });
-      const sessionId = plan.service.kind === "session" ? await findSessionId(db, plan, tz) : null;
       const priceNote = plan.paidPence !== q.totalPence ? ` Paid on Wix £${(plan.paidPence / 100).toFixed(2)}; BayPook's price today £${(q.totalPence / 100).toFixed(2)}.` : "";
 
       if (opts.dryRun) {
-        const endsAt = new Date(plan.startsAt.getTime() + (plan.service.lengthMinutes + q.extraMinutes) * 60_000);
-        await assertBookable(db, {
-          venue: plan.venue,
-          service: plan.service,
-          sessionId,
-          startsAt: plan.startsAt,
-          endsAt,
-          places: q.places,
-          now,
-          tz,
-          ignoreTiming: true,
+        // A savepoint per row: a failed row leaves nothing behind for the rows after it.
+        await db.transaction(async (sp) => {
+          const sessionId = plan.service.kind === "session" ? await findSessionId(sp, plan, tz) : null;
+          await reservePlaces(sp, plan, sessionId, q, ctx);
         });
         out("would create", `${plan.service.name}, ${q.places} ${plan.service.kind === "slot" ? "children" : "places"}.${priceNote}`);
         continue;
       }
 
+      const sessionId = plan.service.kind === "session" ? await findSessionId(db, plan, tz) : null;
       const booking = await createManualBooking(db, {
         user: opts.user,
         venue: plan.venue,
@@ -499,7 +528,56 @@ export async function importWix(db: DbOrTx, csvText: string, opts: ImportOptions
       out("failed", e instanceof Error ? e.message : String(e));
     }
   }
-  return outcomes.sort((a, b) => a.line - b.line);
+  return outcomes;
+}
+
+/**
+ * Dry run only, inside the transaction that is rolled back: the same conflict check
+ * as a real booking, then a confirmed booking row holding the places (and the
+ * reference), so later rows of the file see them. No email, no calendar event.
+ */
+async function reservePlaces(
+  tx: DbOrTx,
+  plan: PlannedBooking,
+  sessionId: string | null,
+  q: { places: number; extraMinutes: number },
+  ctx: RunContext,
+): Promise<void> {
+  const endsAt = new Date(plan.startsAt.getTime() + (plan.service.lengthMinutes + q.extraMinutes) * 60_000);
+  const slot = await assertBookable(tx, {
+    venue: plan.venue,
+    service: plan.service,
+    sessionId,
+    startsAt: plan.startsAt,
+    endsAt,
+    places: q.places,
+    now: ctx.now,
+    tz: ctx.tz,
+    ignoreTiming: true,
+  });
+  let roomId = plan.service.roomId;
+  if (slot.sessionId) {
+    const [session] = await tx.select({ roomId: s.sessions.roomId }).from(s.sessions).where(eq(s.sessions.id, slot.sessionId)).limit(1);
+    if (session) roomId = session.roomId;
+  }
+  const customer = await findOrCreateCustomer(tx, { organisationId: ctx.organisationId, ...plan.customer });
+  const id = randomUUID();
+  await tx.insert(s.bookings).values({
+    reference: `DRY-RUN-${id}`,
+    venueId: plan.venue.id,
+    serviceId: plan.service.id,
+    roomId,
+    sessionId: slot.sessionId,
+    customerId: customer.id,
+    startsAt: slot.startsAt,
+    endsAt: slot.endsAt,
+    status: "confirmed",
+    places: q.places,
+    source: "import",
+    paymentMethod: "imported",
+    externalRef: plan.row.reference,
+    token: `dry-run-${id}`,
+  });
 }
 
 /** Plain-text table of outcomes. */

@@ -2,7 +2,7 @@
  * Customers: one record per parent within the organisation, matched by e-mail
  * (case-insensitive). Venue-agnostic: the same parent can book at either venue.
  */
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, exists, ilike, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { isUuid } from "./catalogue";
@@ -73,10 +73,28 @@ function escapeLike(q: string): string {
   return q.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-/** Search by name, e-mail or phone (case-insensitive). Most recently updated first. */
-export async function searchCustomers(db: DbOrTx, opts: { q?: string; limit?: number } = {}): Promise<s.Customer[]> {
+/**
+ * Search by name, e-mail or phone (case-insensitive). Most recently updated first.
+ * `venueIds` limits it (in SQL, before the limit) to parents who booked at one of
+ * those venues (staff and managers); null or omitted = everyone (owner).
+ */
+export async function searchCustomers(
+  db: DbOrTx,
+  opts: { q?: string; limit?: number; venueIds?: string[] | null } = {},
+): Promise<s.Customer[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const where: SQL[] = [isNull(s.customers.anonymisedAt)];
+  if (Array.isArray(opts.venueIds)) {
+    if (opts.venueIds.length === 0) return [];
+    where.push(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(s.bookings)
+          .where(and(eq(s.bookings.customerId, s.customers.id), inArray(s.bookings.venueId, opts.venueIds))),
+      ),
+    );
+  }
   const q = opts.q?.trim();
   if (q) {
     const like = `%${escapeLike(q)}%`;

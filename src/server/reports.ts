@@ -6,12 +6,27 @@
  * Takings count a payment on the local day it was taken (`payments.createdAt`),
  * whatever happened to it later: a payment that was later refunded still counts
  * as taken, and the refund is subtracted on the day it was given. Imported
- * payments (taken by Wix before the switch) are not BayPook takings and are left out.
+ * payments (taken by Wix before the switch) are not BayPook takings and are left
+ * out, and so are refunds of them: they are listed with the refunds, marked as a
+ * Wix payment, instead.
  */
-import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
 import { addDays, endOfLocalDay, fmtLocal, localDate, startOfLocalDay } from "@/core/time";
+import type { CurrentUser } from "./auth";
+
+// ---------- who sees what ----------
+
+/**
+ * Takings, the takings and customers exports, and customer contact details in the
+ * bookings export are for an owner, or a manager of every venue in scope
+ * (DECISIONS.md 25). Staff see the rest of the reports.
+ */
+export function canSeeMoneyAndContacts(user: Pick<CurrentUser, "isOwner" | "venues">, venueIds: string[]): boolean {
+  if (user.isOwner) return true;
+  return venueIds.length > 0 && venueIds.every((id) => user.venues.some((v) => v.venueId === id && v.role === "manager"));
+}
 
 // ---------- ranges ----------
 
@@ -116,6 +131,8 @@ export async function takingsByDay(db: DbOrTx, input: RangeInput): Promise<Takin
         and(
           inArray(s.payments.venueId, input.venueIds),
           eq(s.refunds.status, "succeeded"),
+          // Refunds of money Wix took are not BayPook money out.
+          ne(s.payments.method, "imported"),
           gte(s.refunds.createdAt, start),
           lt(s.refunds.createdAt, end),
         ),
@@ -300,6 +317,8 @@ export type RefundListItem = {
   reason: string;
   status: s.Refund["status"];
   byName: string;
+  /** The refunded payment was taken by Wix (imported): it does not count in takings. */
+  wixPayment: boolean;
 };
 
 /** Refunds given in the range (any status), newest first. */
@@ -319,14 +338,20 @@ export async function refundsInRange(db: DbOrTx, input: RangeInput): Promise<Ref
       status: s.refunds.status,
       userName: s.users.name,
       userEmail: s.users.email,
+      method: s.payments.method,
     })
     .from(s.refunds)
+    .innerJoin(s.payments, eq(s.refunds.paymentId, s.payments.id))
     .innerJoin(s.bookings, eq(s.refunds.bookingId, s.bookings.id))
     .innerJoin(s.venues, eq(s.bookings.venueId, s.venues.id))
     .leftJoin(s.users, eq(s.refunds.createdBy, s.users.id))
     .where(and(inArray(s.bookings.venueId, input.venueIds), gte(s.refunds.createdAt, start), lt(s.refunds.createdAt, end)))
     .orderBy(desc(s.refunds.createdAt));
-  return rows.map(({ userName, userEmail, ...r }) => ({ ...r, byName: userName || userEmail || "Stripe or system" }));
+  return rows.map(({ userName, userEmail, method, ...r }) => ({
+    ...r,
+    byName: userName || userEmail || "Stripe or system",
+    wixPayment: method === "imported",
+  }));
 }
 
 export type OutstandingItem = BookingListItem & { owedPence: number };
@@ -400,8 +425,12 @@ export function linesSummary(b: Pick<s.Booking, "lines" | "addOns">): string {
 
 export type ExportInput = { venueIds: string[]; tz: string; from?: string | null; to?: string | null };
 
-/** Every booking (optionally only those starting in from..to), with a header row. */
-export async function bookingsCsv(db: DbOrTx, input: ExportInput): Promise<string[][]> {
+/**
+ * Every booking (optionally only those starting in from..to), with a header row.
+ * `includeContact: false` (staff) leaves out the customer's email and phone columns.
+ */
+export async function bookingsCsv(db: DbOrTx, input: ExportInput & { includeContact: boolean }): Promise<string[][]> {
+  const contact = input.includeContact;
   const header = [
     "Reference",
     "Venue",
@@ -410,8 +439,7 @@ export async function bookingsCsv(db: DbOrTx, input: ExportInput): Promise<strin
     "End",
     "Status",
     "Customer name",
-    "Email",
-    "Phone",
+    ...(contact ? ["Email", "Phone"] : []),
     "Places",
     "Lines",
     "Total (GBP)",
@@ -444,8 +472,7 @@ export async function bookingsCsv(db: DbOrTx, input: ExportInput): Promise<strin
       when(b.endsAt),
       b.status,
       `${c.firstName} ${c.lastName}`.trim(),
-      c.email,
-      c.phone ?? "",
+      ...(contact ? [c.email, c.phone ?? ""] : []),
       String(b.places),
       linesSummary(b),
       pounds(b.totalPence),

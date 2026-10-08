@@ -6,8 +6,8 @@
  * change their own role; the last active owner can never lose owner rights or
  * be deactivated; managers and staff need at least one venue.
  */
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Db, DbOrTx } from "@/db";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import type { Db, DbOrTx, Tx } from "@/db";
 import * as s from "@/db/schema";
 import { normaliseEmail, requestMagicLink, type CurrentUser, type VenueRole } from "./auth";
 import { audit } from "./audit";
@@ -73,14 +73,23 @@ export async function listUsers(db: DbOrTx): Promise<UserRow[]> {
     .sort((a, b) => Number(b.active) - Number(a.active));
 }
 
-async function activeOwnerCount(db: DbOrTx, excludingUserId?: string): Promise<number> {
-  const where = [eq(s.users.isOwner, true), eq(s.users.active, true)];
-  if (excludingUserId) where.push(ne(s.users.id, excludingUserId));
-  const [{ n }] = await db
+const activeOwner = () => and(eq(s.users.isOwner, true), eq(s.users.active, true));
+
+/**
+ * Race-safe last-owner check, inside the write transaction: lock the active owner
+ * rows first (so two owners demoting or deactivating each other at once queue up),
+ * make the change, then count. With no active owner left it throws, rolling back.
+ */
+async function lockActiveOwners(tx: Tx): Promise<void> {
+  await tx.select({ id: s.users.id }).from(s.users).where(activeOwner()).for("update");
+}
+
+async function assertAnOwnerRemains(tx: Tx): Promise<void> {
+  const [{ n }] = await tx
     .select({ n: sql<number>`count(*)` })
     .from(s.users)
-    .where(and(...where));
-  return Number(n);
+    .where(activeOwner());
+  if (Number(n) === 0) throw new UsersAdminError("LAST_OWNER", "There must always be at least one owner.");
 }
 
 /** Validate and de-duplicate venue roles against real venues. */
@@ -187,12 +196,12 @@ export async function updateUser(db: Db, input: UpdateUserInput): Promise<void> 
   if (roleChanged && input.userId === input.by.id) {
     throw new UsersAdminError("SELF", "You cannot change your own role. Ask another owner.");
   }
-  if (before.user.isOwner && !input.isOwner && before.user.active && (await activeOwnerCount(db, input.userId)) === 0) {
-    throw new UsersAdminError("LAST_OWNER", "There must always be at least one owner.");
-  }
+  const losesOwner = before.user.isOwner && !input.isOwner;
 
   await db.transaction(async (tx) => {
+    if (losesOwner) await lockActiveOwners(tx);
     await tx.update(s.users).set({ name, isOwner: input.isOwner, updatedAt: new Date() }).where(eq(s.users.id, input.userId));
+    if (losesOwner) await assertAnOwnerRemains(tx);
     await tx.delete(s.userVenues).where(eq(s.userVenues.userId, input.userId));
     if (venues.length) await tx.insert(s.userVenues).values(venues.map((v) => ({ userId: input.userId, ...v })));
     await audit(tx, {
@@ -211,14 +220,12 @@ export async function setUserActive(db: Db, input: { by: CurrentUser; userId: st
   requireOwnerUser(input.by);
   const before = await loadRow(db, input.userId);
   if (before.user.active === input.active) return;
-  if (!input.active) {
-    if (input.userId === input.by.id) throw new UsersAdminError("SELF", "You cannot turn off your own login.");
-    if (before.user.isOwner && (await activeOwnerCount(db, input.userId)) === 0) {
-      throw new UsersAdminError("LAST_OWNER", "There must always be at least one owner.");
-    }
-  }
+  if (!input.active && input.userId === input.by.id) throw new UsersAdminError("SELF", "You cannot turn off your own login.");
+  const losesOwner = !input.active && before.user.isOwner;
   await db.transaction(async (tx) => {
+    if (losesOwner) await lockActiveOwners(tx);
     await tx.update(s.users).set({ active: input.active, updatedAt: new Date() }).where(eq(s.users.id, input.userId));
+    if (losesOwner) await assertAnOwnerRemains(tx);
     if (!input.active) await tx.delete(s.sessionsAuth).where(eq(s.sessionsAuth.userId, input.userId));
     await audit(tx, {
       user: input.by,

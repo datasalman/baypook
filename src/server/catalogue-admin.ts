@@ -11,12 +11,25 @@ import { z } from "zod";
 import { and, asc, eq, gt, gte, inArray, isNull, lt, max, sql } from "drizzle-orm";
 import type { DbOrTx } from "@/db";
 import * as s from "@/db/schema";
-import { addDays, isValidDateStr, localDate, timeToMinutes, minutesToTime, WEEKDAY_KEYS, zonedDateTime, endOfLocalDay, startOfLocalDay } from "@/core/time";
+import {
+  addDays,
+  isValidDateStr,
+  localDate,
+  localTime,
+  localWeekday,
+  timeToMinutes,
+  minutesToTime,
+  WEEKDAY_KEYS,
+  zonedDateTime,
+  endOfLocalDay,
+  startOfLocalDay,
+} from "@/core/time";
+import { generateOccurrences } from "@/core/timetable";
 import { audit } from "./audit";
 import { AuthError, canAccessVenue, canManageCatalogue, type CurrentUser } from "./auth";
 import { isUuid } from "./catalogue";
 import { getOrganisation } from "./org";
-import { ensureSessions, ensureVenueSessions } from "./sessions";
+import { ensureSessions, ensureVenueSessions, type EnsureSessionsResult } from "./sessions";
 
 // ---------- errors and validation ----------
 
@@ -151,25 +164,45 @@ async function orgTz(db: DbOrTx): Promise<string> {
 /** Days ahead that `refreshServiceSessions` materialises. */
 export const SESSION_WINDOW_DAYS = 62;
 
+const EMPTY_RESULT: EnsureSessionsResult = { inserted: 0, updated: 0, removed: 0 };
+
 /**
- * Re-run session generation for one service over the next 62 days. Returns the ids of
- * sessions the timetable no longer produces that stay scheduled because of live bookings.
+ * Re-run session generation for one service over the next 62 days. `keptScheduled`
+ * lists the sessions the timetable no longer produces that stay scheduled (closed to
+ * new bookings) because of live bookings; `heldAboveRules` the ones whose places stay
+ * above the rules because more places are already booked.
  */
-export async function refreshServiceSessions(db: DbOrTx, serviceId: string): Promise<string[]> {
+export async function refreshServiceSessions(db: DbOrTx, serviceId: string, now: Date = new Date()): Promise<EnsureSessionsResult> {
   const [svc] = await db.select().from(s.services).where(eq(s.services.id, serviceId)).limit(1);
-  if (!svc || svc.kind !== "session" || svc.archivedAt) return [];
+  if (!svc || svc.kind !== "session" || svc.archivedAt) return { ...EMPTY_RESULT };
   const venue = await loadVenue(db, svc.venueId);
   const tz = await orgTz(db);
-  const today = localDate(new Date(), tz);
-  const r = await ensureSessions(db, svc, venue, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
-  return r.keptScheduled ?? [];
+  const today = localDate(now, tz);
+  return ensureSessions(db, svc, venue, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
 }
 
 /** Re-run session generation for every session service at a venue. */
-export async function refreshVenueSessions(db: DbOrTx, venueId: string): Promise<void> {
+export async function refreshVenueSessions(db: DbOrTx, venueId: string, now: Date = new Date()): Promise<EnsureSessionsResult> {
   const tz = await orgTz(db);
-  const today = localDate(new Date(), tz);
-  await ensureVenueSessions(db, venueId, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
+  const today = localDate(now, tz);
+  return ensureVenueSessions(db, venueId, today, addDays(today, SESSION_WINDOW_DAYS - 1), tz);
+}
+
+/** "1 session", "2 sessions". */
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Flash text for sessions kept because they have bookings ("" when none). */
+export function keptSessionsMessage(n: number): string {
+  if (!n) return "";
+  return ` ${plural(n, "session has bookings, so it was", "sessions have bookings, so they were")} kept and closed to new bookings: move or cancel ${n === 1 ? "its" : "their"} bookings from Sessions.`;
+}
+
+/** Flash text for sessions whose places stay above the new number because more are booked ("" when none). */
+export function heldAboveMessage(n: number): string {
+  if (!n) return "";
+  return ` ${plural(n, "session already has", "sessions already have")} more places booked than that, so ${n === 1 ? "it keeps" : "they keep"} enough places for ${n === 1 ? "its" : "their"} bookings.`;
 }
 
 // ---------- services ----------
@@ -528,7 +561,23 @@ async function loadRule(db: DbOrTx, user: CurrentUser, ruleId: string): Promise<
   return { rule, service };
 }
 
-export async function updateTimetableRuleCapacity(db: DbOrTx, user: CurrentUser, ruleId: string, capacity: number): Promise<s.TimetableRule> {
+/** Sessions starting from `now` on the rule's weekday at its time. */
+function onRule(rule: Pick<s.TimetableRule, "weekday" | "startTime">, startsAt: Date, now: Date, tz: string): boolean {
+  return startsAt.getTime() >= now.getTime() && localWeekday(startsAt, tz) === rule.weekday && localTime(startsAt, tz) === rule.startTime;
+}
+
+/**
+ * Change a rule's places. Sessions already booked beyond the new number keep enough
+ * places for their bookings; `heldAbove` counts them and `message` says so.
+ */
+export async function updateTimetableRuleCapacity(
+  db: DbOrTx,
+  user: CurrentUser,
+  ruleId: string,
+  capacity: number,
+  opts: { now?: Date } = {},
+): Promise<s.TimetableRule & { heldAbove: number; message: string }> {
+  const now = opts.now ?? new Date();
   const { rule: before, service } = await loadRule(db, user, ruleId);
   const cap = parseInput(zf.int("Places", 1, 500), capacity);
   const row = await db.transaction(async (tx) => {
@@ -536,17 +585,36 @@ export async function updateTimetableRuleCapacity(db: DbOrTx, user: CurrentUser,
     await audit(tx, { user, action: "timetable.capacity", entityType: "timetable_rule", entityId: r.id, venueId: service.venueId, before, after: r });
     return r;
   });
-  await refreshServiceSessions(db, service.id);
-  return row;
+  const result = await refreshServiceSessions(db, service.id, now);
+  const tz = await orgTz(db);
+  const heldAbove = (result.heldAboveRules ?? []).filter((h) => h.wanted === cap && onRule(row, h.startsAt, now, tz)).length;
+  return { ...row, heldAbove, message: `${row.startTime} now has ${plural(row.capacity, "place", "places")}.${heldAboveMessage(heldAbove)}` };
 }
 
-export async function deleteTimetableRule(db: DbOrTx, user: CurrentUser, ruleId: string): Promise<void> {
+/**
+ * Delete a rule. Its sessions with live bookings are kept, closed to new bookings;
+ * `keptWithBookings` counts them and `message` says so.
+ */
+export async function deleteTimetableRule(
+  db: DbOrTx,
+  user: CurrentUser,
+  ruleId: string,
+  opts: { now?: Date } = {},
+): Promise<{ keptWithBookings: number; message: string }> {
+  const now = opts.now ?? new Date();
   const { rule, service } = await loadRule(db, user, ruleId);
   await db.transaction(async (tx) => {
     await tx.delete(s.timetableRules).where(eq(s.timetableRules.id, ruleId));
     await audit(tx, { user, action: "timetable.delete", entityType: "timetable_rule", entityId: rule.id, venueId: service.venueId, before: rule });
   });
-  await refreshServiceSessions(db, service.id);
+  const result = await refreshServiceSessions(db, service.id, now);
+  const tz = await orgTz(db);
+  let keptWithBookings = 0;
+  if (result.keptScheduled?.length) {
+    const rows = await db.select({ startsAt: s.sessions.startsAt }).from(s.sessions).where(inArray(s.sessions.id, result.keptScheduled));
+    keptWithBookings = rows.filter((r) => onRule(rule, r.startsAt, now, tz)).length;
+  }
+  return { keptWithBookings, message: `Time removed.${keptSessionsMessage(keptWithBookings)}` };
 }
 
 /** Pure: hourly start times from opening to one length before closing. */
@@ -567,18 +635,21 @@ export async function fillTimetableFromOpeningHours(
   db: DbOrTx,
   user: CurrentUser,
   serviceId: string,
-  input: { capacity?: number } = {},
+  input: { capacity?: number; now?: Date } = {},
 ): Promise<{ added: number }> {
   const service = await loadService(db, user, serviceId);
   assertSessionService(service);
   const venue = await loadVenue(db, service.venueId);
+  const today = localDate(input.now ?? new Date(), await orgTz(db));
   const existing = await db.select().from(s.timetableRules).where(eq(s.timetableRules.serviceId, serviceId));
+  // Only an open-ended or still-valid rule covers a time; one that has ended does not.
+  const covering = existing.filter((r) => r.validTo === null || r.validTo >= today);
   const capacity =
     input.capacity !== undefined ? parseInput(zf.int("Places", 1, 500), input.capacity) : mostCommon(existing.map((r) => r.capacity)) ?? 10;
   const rows: (typeof s.timetableRules.$inferInsert)[] = [];
   for (let weekday = 0; weekday < 7; weekday++) {
     for (const startTime of hourlyStarts(venue.openingHours[WEEKDAY_KEYS[weekday]], service.lengthMinutes)) {
-      if (existing.some((r) => r.weekday === weekday && r.startTime === startTime)) continue;
+      if (covering.some((r) => r.weekday === weekday && r.startTime === startTime)) continue;
       rows.push({ serviceId, weekday, startTime, capacity });
     }
   }
@@ -587,7 +658,7 @@ export async function fillTimetableFromOpeningHours(
       const inserted = await tx.insert(s.timetableRules).values(rows).returning();
       await audit(tx, { user, action: "timetable.fill", entityType: "timetable_rule", entityId: serviceId, venueId: service.venueId, after: inserted });
     });
-    await refreshServiceSessions(db, serviceId);
+    await refreshServiceSessions(db, serviceId, input.now);
   }
   return { added: rows.length };
 }
@@ -621,20 +692,33 @@ export const addExceptionSchema = z
   .refine((v) => (v.kind !== "add" && v.kind !== "capacity") || (v.capacity !== null && v.capacity !== undefined), "Places: say how many places.");
 export type AddExceptionInput = z.input<typeof addExceptionSchema>;
 
+/**
+ * Add a one-off change for one date. It applies to pinned sessions too:
+ * - cancel: a session with no live bookings is cancelled (or removed); one with
+ *   live bookings is kept, closed to new bookings (`keptWithBookings`);
+ * - capacity: the session gets the new number of places, but never fewer than are
+ *   already booked (`heldAbove` counts the sessions kept above it).
+ * `message` is the flash text for the admin.
+ */
 export async function addTimetableException(
   db: DbOrTx,
   user: CurrentUser,
   serviceId: string,
   input: AddExceptionInput,
-): Promise<{ exception: s.TimetableException; keptWithBookings: number }> {
+  opts: { now?: Date } = {},
+): Promise<{ exception: s.TimetableException; keptWithBookings: number; heldAbove: number; message: string }> {
+  const now = opts.now ?? new Date();
   const service = await loadService(db, user, serviceId);
   assertSessionService(service);
   const data = parseInput(addExceptionSchema, input);
   const tz = await orgTz(db);
-  const today = localDate(new Date(), tz);
+  const today = localDate(now, tz);
   if (data.date < today) throw new AdminError("Date: pick today or a later date.");
   const kind: s.TimetableException["kind"] = data.kind === "cancel_day" || data.kind === "cancel_time" ? "cancel" : data.kind;
   const startTime = data.kind === "cancel_day" ? null : (data.startTime ?? null);
+  const start = startTime ? zonedDateTime(data.date, startTime, tz) : startOfLocalDay(data.date, tz);
+  const end = startTime ? new Date(start.getTime() + 1) : endOfLocalDay(data.date, tz);
+  let pinnedHeldAbove = 0;
   const exception = await db.transaction(async (tx) => {
     const [row] = await tx
       .insert(s.timetableExceptions)
@@ -648,23 +732,35 @@ export async function addTimetableException(
         createdBy: user.id,
       })
       .returning();
+    if (kind === "capacity" && row.capacity !== null) {
+      // Generation leaves pinned sessions alone, so the change is applied to them here.
+      // A kept leftover (pinned `manual`) stays closed: the rules do not produce it.
+      const pinned = await tx
+        .select()
+        .from(s.sessions)
+        .where(and(eq(s.sessions.serviceId, serviceId), eq(s.sessions.startsAt, start), eq(s.sessions.pinned, true)));
+      for (const p of pinned.filter((x) => x.source !== "manual")) {
+        const { places } = await sessionCounts(tx, p.id);
+        const cap = Math.max(row.capacity, places);
+        if (cap > row.capacity) pinnedHeldAbove++;
+        if (cap !== p.capacity) await tx.update(s.sessions).set({ capacity: cap, updatedAt: new Date() }).where(eq(s.sessions.id, p.id));
+      }
+    }
     await audit(tx, { user, action: "exception.add", entityType: "timetable_exception", entityId: row.id, venueId: service.venueId, after: row });
     return row;
   });
-  const kept = await refreshServiceSessions(db, serviceId);
+  const result = await refreshServiceSessions(db, serviceId, now);
+  const inDay = (at: Date) => at.getTime() >= start.getTime() && at.getTime() < end.getTime();
 
   // Built from what `ensureSessions` actually kept, so the message and the timetable agree.
   let keptWithBookings = 0;
-  if (kind === "cancel" && kept.length) {
-    const start = startTime ? zonedDateTime(data.date, startTime, tz) : startOfLocalDay(data.date, tz);
-    const end = startTime ? new Date(start.getTime() + 1) : endOfLocalDay(data.date, tz);
-    const rows = await db
-      .select({ id: s.sessions.id })
-      .from(s.sessions)
-      .where(and(inArray(s.sessions.id, kept), gte(s.sessions.startsAt, start), lt(s.sessions.startsAt, end)));
-    keptWithBookings = rows.length;
+  if (kind === "cancel" && result.keptScheduled?.length) {
+    const rows = await db.select({ startsAt: s.sessions.startsAt }).from(s.sessions).where(inArray(s.sessions.id, result.keptScheduled));
+    keptWithBookings = rows.filter((r) => inDay(r.startsAt)).length;
   }
-  return { exception, keptWithBookings };
+  const heldAbove = kind === "capacity" ? pinnedHeldAbove + (result.heldAboveRules ?? []).filter((h) => inDay(h.startsAt)).length : 0;
+  const message = `Saved.${kind === "cancel" ? keptSessionsMessage(keptWithBookings) : heldAboveMessage(heldAbove)}`;
+  return { exception, keptWithBookings, heldAbove, message };
 }
 
 export async function deleteTimetableException(db: DbOrTx, user: CurrentUser, exceptionId: string): Promise<void> {
@@ -859,12 +955,20 @@ async function sessionCounts(db: DbOrTx, sessionId: string): Promise<{ places: n
   return { places: Number(r?.places ?? 0), confirmed: Number(r?.confirmed ?? 0) };
 }
 
+/** True for a session the timetable no longer produces, kept only for its bookings and closed to new ones. */
+export function isKeptLeftover(row: Pick<s.Session, "pinned" | "source" | "status">): boolean {
+  return row.pinned && row.source === "manual" && row.status === "scheduled";
+}
+
 /** Change one occurrence's places. Pins it so the timetable leaves it alone. */
 export async function setSessionCapacity(db: DbOrTx, user: CurrentUser, sessionId: string, capacity: number): Promise<s.Session> {
   const before = await loadSession(db, user, sessionId);
   const cap = parseInput(zf.int("Places", 0, 500), capacity);
   const { places } = await sessionCounts(db, sessionId);
   if (cap < places) throw new AdminError(`${places} ${places === 1 ? "place is" : "places are"} already booked, so places cannot go below ${places}.`);
+  if (isKeptLeftover(before) && cap > places) {
+    throw new AdminError("This session is no longer in the timetable and is closed to new bookings. Add it as an extra session to open it again.");
+  }
   return db.transaction(async (tx) => {
     const [row] = await tx.update(s.sessions).set({ capacity: cap, pinned: true, updatedAt: new Date() }).where(eq(s.sessions.id, sessionId)).returning();
     await audit(tx, {
@@ -938,52 +1042,82 @@ export const extraSessionSchema = z.object({
 });
 export type ExtraSessionInput = z.input<typeof extraSessionSchema>;
 
-/** Add an extra occurrence: a timetable exception `add`, then materialise it. */
-export async function addExtraSession(db: DbOrTx, user: CurrentUser, serviceId: string, input: ExtraSessionInput): Promise<s.Session> {
+/**
+ * Add an extra occurrence: a timetable exception `add`, then materialise it, in one
+ * transaction. Refused before anything is written when the venue would not produce
+ * it (closed, or before it opens); if generation still produces nothing, the
+ * exception is rolled back. Also opens again a session kept only for its bookings.
+ */
+export async function addExtraSession(
+  db: DbOrTx,
+  user: CurrentUser,
+  serviceId: string,
+  input: ExtraSessionInput,
+  opts: { now?: Date } = {},
+): Promise<s.Session> {
+  const now = opts.now ?? new Date();
   const service = await loadService(db, user, serviceId);
   assertSessionService(service);
   if (service.archivedAt) throw new AdminError("That service is archived. Restore it first.");
   const data = parseInput(extraSessionSchema, input);
   const tz = await orgTz(db);
-  if (data.date < localDate(new Date(), tz)) throw new AdminError("Date: pick today or a later date.");
+  if (data.date < localDate(now, tz)) throw new AdminError("Date: pick today or a later date.");
   const startsAt = zonedDateTime(data.date, data.startTime, tz);
+  const venue = await loadVenue(db, service.venueId);
+  const notProduced = () =>
+    new AdminError(venue.opensAt && startsAt < venue.opensAt ? "That date is before the venue opens." : "The session could not be added. Check the venue is not closed.");
+
+  // Would the timetable produce it? Worked out in memory, before anything is written.
+  const preview = generateOccurrences({
+    service,
+    venue,
+    rules: [],
+    exceptions: [{ id: "preview", date: data.date, startTime: data.startTime, kind: "add", capacity: data.capacity }],
+    from: data.date,
+    to: data.date,
+    tz,
+  });
+  if (!preview.some((o) => o.startsAt.getTime() === startsAt.getTime())) throw notProduced();
+
   const [existing] = await db
     .select()
     .from(s.sessions)
     .where(and(eq(s.sessions.serviceId, serviceId), eq(s.sessions.startsAt, startsAt)))
     .limit(1);
-  if (existing && existing.status === "scheduled") throw new AdminError(`There is already a ${service.name} session at ${data.startTime} that day.`);
-  if (existing && existing.pinned) {
-    // A cancelled, pinned occurrence: bring it back with the new capacity.
-    const { places } = await sessionCounts(db, existing.id);
-    return db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(s.sessions)
-        .set({ status: "scheduled", capacity: Math.max(data.capacity, places), updatedAt: new Date() })
-        .where(eq(s.sessions.id, existing.id))
-        .returning();
-      await audit(tx, { user, action: "session.add", entityType: "session", entityId: row.id, venueId: row.venueId, before: existing, after: row });
-      return row;
-    });
+  if (existing && existing.status === "scheduled" && !isKeptLeftover(existing)) {
+    throw new AdminError(`There is already a ${service.name} session at ${data.startTime} that day.`);
   }
-  await db.transaction(async (tx) => {
+
+  return db.transaction(async (tx) => {
     const [ex] = await tx
       .insert(s.timetableExceptions)
       .values({ serviceId, date: data.date, startTime: data.startTime, kind: "add", capacity: data.capacity, note: data.note ?? null, createdBy: user.id })
       .returning();
-    await audit(tx, { user, action: "session.add", entityType: "timetable_exception", entityId: ex.id, venueId: service.venueId, after: ex });
+    if (existing && existing.pinned && existing.source !== "manual") {
+      // A cancelled, pinned occurrence (the admin's own edit): bring it back with the new capacity.
+      const { places } = await sessionCounts(tx, existing.id);
+      await tx
+        .update(s.sessions)
+        .set({ status: "scheduled", capacity: Math.max(data.capacity, places), updatedAt: new Date() })
+        .where(eq(s.sessions.id, existing.id));
+    }
+    await ensureSessions(tx, service, venue, data.date, data.date, tz);
+    const [row] = await tx
+      .select()
+      .from(s.sessions)
+      .where(and(eq(s.sessions.serviceId, serviceId), eq(s.sessions.startsAt, startsAt)))
+      .limit(1);
+    // Throwing rolls back the exception with everything else.
+    if (!row || row.status !== "scheduled" || isKeptLeftover(row)) throw notProduced();
+    await audit(tx, {
+      user,
+      action: "session.add",
+      entityType: "timetable_exception",
+      entityId: ex.id,
+      venueId: service.venueId,
+      before: existing ?? null,
+      after: { exception: ex, session: row },
+    });
+    return row;
   });
-  const venue = await loadVenue(db, service.venueId);
-  await ensureSessions(db, service, venue, data.date, data.date, tz);
-  const [row] = await db
-    .select()
-    .from(s.sessions)
-    .where(and(eq(s.sessions.serviceId, serviceId), eq(s.sessions.startsAt, startsAt)))
-    .limit(1);
-  if (!row) {
-    throw new AdminError(
-      venue.opensAt && startsAt < venue.opensAt ? "That date is before the venue opens." : "The session could not be added. Check the venue is not closed.",
-    );
-  }
-  return row;
 }
