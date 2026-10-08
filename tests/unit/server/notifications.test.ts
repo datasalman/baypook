@@ -6,7 +6,8 @@ import { createTestDb, type Db } from "@/db";
 import * as s from "@/db/schema";
 import { zonedDateTime } from "@/core/time";
 import { DemoEmailProvider } from "@/providers/email/demo";
-import { DEFAULT_TEMPLATES, type TemplateKey } from "@/providers/email/defaults";
+import { DEFAULT_TEMPLATES, PLACEHOLDERS, type TemplateKey } from "@/providers/email/defaults";
+import { renderTemplate } from "@/providers/email/render";
 import {
   buildTemplateContext,
   getTemplate,
@@ -162,6 +163,8 @@ describe("buildTemplateContext", () => {
       "contactLine",
       "organisationName",
       "refundAmount",
+      "refundToCard",
+      "refundInStore",
       "paymentLine",
       "customerName",
       "customerPhone",
@@ -189,6 +192,60 @@ describe("buildTemplateContext", () => {
     expect(vars.endTime).toBe("13:00");
     expect(vars.birthdayChild).toBe("Maya, age 8");
     expect(vars.refundAmount).toBe("£50.00");
+  });
+
+  it("covers every documented placeholder", async () => {
+    const vars = buildTemplateContext(await loadBookingEmailContext(f.db, f.workshop.id));
+    for (const p of PLACEHOLDERS) expect(Object.keys(vars)).toContain(p.key);
+  });
+
+  it("marks where the refund went: the card by default, or in store", async () => {
+    const ctx = await loadBookingEmailContext(f.db, f.workshop.id);
+    expect(buildTemplateContext(ctx, { refundAmountPence: 1700 })).toMatchObject({ refundToCard: "yes", refundInStore: "" });
+    expect(buildTemplateContext(ctx, { refundAmountPence: 1700, refundMethod: "card" })).toMatchObject({ refundToCard: "yes", refundInStore: "" });
+    expect(buildTemplateContext(ctx, { refundAmountPence: 1700, refundMethod: "in_store" })).toMatchObject({ refundToCard: "", refundInStore: "yes" });
+  });
+});
+
+describe("default template wording", () => {
+  const tpl = (key: TemplateKey) => DEFAULT_TEMPLATES.find((t) => t.key === key)!;
+
+  it("words the refund email for a card refund and for an in-store refund", async () => {
+    const card = await renderBookingEmail(f.db, { bookingId: f.workshop.id, template: "refund", extra: { refundAmountPence: 1700, refundMethod: "card" } });
+    expect(card.text).toContain("We've refunded £17.00 to the card you paid with. It usually shows within five to ten working days");
+    expect(card.text).not.toContain("back in store");
+    const store = await renderBookingEmail(f.db, { bookingId: f.workshop.id, template: "refund", extra: { refundAmountPence: 1700, refundMethod: "in_store" } });
+    expect(store.text).toContain("We've given you £17.00 back in store.");
+    expect(store.text).not.toContain("card you paid with");
+    for (const r of [card, store]) {
+      expect(r.text).toContain("Booking BP-AAAA1, Classic Workshops at South Woodford, Saturday 24 October 2026.");
+      expect(r.text).toContain("Any questions, message or call us: hello@slimedom.com");
+    }
+  });
+
+  it("shows what is owed in the reminder", async () => {
+    const ctx = await loadBookingEmailContext(f.db, f.workshop.id);
+    const paid = renderTemplate(tpl("reminder"), buildTemplateContext(ctx));
+    expect(paid.text).toContain("Reference BP-AAAA1\nPaid online: £34.00");
+    const inStore = renderTemplate(
+      tpl("reminder"),
+      buildTemplateContext({ ...ctx, booking: { ...ctx.booking, paymentMethod: "pay_in_store", paymentStatus: "unpaid", paidPence: 0 } }),
+    );
+    expect(inStore.text).toContain("To pay in store: £34.00");
+  });
+
+  it("keeps the defaults generic and seeds the Slimedom apron line", async () => {
+    for (const t of DEFAULT_TEMPLATES) {
+      expect(t.body).not.toMatch(/slime|decoden/i);
+      expect(t.subject).not.toMatch(/slime|decoden/i);
+    }
+    for (const p of PLACEHOLDERS) expect(p.meaning).not.toMatch(/slime|decoden|classic workshops/i);
+    expect(tpl("confirmation").body).toContain("What to wear: something you don't mind getting glittery.\n");
+    const seeded = await f.db
+      .select()
+      .from(s.emailTemplates)
+      .where(and(eq(s.emailTemplates.organisationId, f.org.id), eq(s.emailTemplates.key, "confirmation")));
+    expect(seeded[0].body).toContain("What to wear: something you don't mind getting glittery. Aprons are provided, but slime finds a way.");
   });
 });
 
@@ -356,11 +413,22 @@ describe("previewTemplate", () => {
     }
     const conf = await previewTemplate(f.db, f.org.id, "confirmation");
     expect(conf.text).toContain("Decoden pieces are bought in store");
+    expect(conf.text).toContain("Aprons are provided");
+    const reminder = await previewTemplate(f.db, f.org.id, "reminder");
+    for (const p of [conf, reminder]) {
+      expect(p.text).toContain(f.sw.address);
+      expect(p.text).toContain(f.sw.parkingNotes!);
+      expect(p.text).toContain("What to wear: something you don't mind getting glittery.");
+      expect(p.text).toContain("Decoden pieces are bought in store");
+      expect(p.text).toMatch(/Need to change it\?\s+Message or call us/);
+    }
+    expect(reminder.text).toMatch(/(Paid online|Paid in store|To pay in store): £\d+\.\d\d/);
     const owner = await previewTemplate(f.db, f.org.id, "owner_new_party");
     expect(owner.text).toContain("Slime Party");
     expect(owner.text).toContain("Birthday child: Maya");
     const refund = await previewTemplate(f.db, f.org.id, "refund");
     expect(refund.subject).toContain("£17.00");
+    expect(refund.text).toContain("We've refunded £17.00 to the card you paid with.");
   });
 
   it("renders an unsaved override", async () => {

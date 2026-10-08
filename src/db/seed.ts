@@ -154,8 +154,16 @@ export async function seed(db: DbOrTx): Promise<SeedResult> {
   }
 
   // ----- email templates -----
+  // The defaults are generic; Slimedom's confirmation adds its own line about aprons.
+  const GLITTER = "What to wear: something you don't mind getting glittery.";
   await db.insert(s.emailTemplates).values(
-    DEFAULT_TEMPLATES.map((t) => ({ organisationId: org.id, key: t.key, name: t.name, subject: t.subject, body: t.body })),
+    DEFAULT_TEMPLATES.map((t) => ({
+      organisationId: org.id,
+      key: t.key,
+      name: t.name,
+      subject: t.subject,
+      body: t.key === "confirmation" ? t.body.replace(GLITTER, `${GLITTER} Aprons are provided, but slime finds a way.`) : t.body,
+    })),
   );
 
   await db.insert(s.settings).values([{ key: "seed.version", value: 1 }]);

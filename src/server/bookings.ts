@@ -25,7 +25,7 @@ import { findOrCreateCustomer } from "./customers";
 import { getOrganisation } from "./org";
 import { audit } from "./audit";
 import { canAccessVenue, canRefund, type CurrentUser } from "./auth";
-import { adminBookingUrl, brandFor, sendBookingEmail, sendRawEmail } from "./notifications";
+import { adminBookingUrl, brandFor, refundMethodFor, sendBookingEmail, sendRawEmail, type RefundMethod } from "./notifications";
 import { syncBookingToCalendar } from "./calendar";
 import { escapeHtml, wrapHtml } from "@/providers/email/render";
 import { env } from "@/lib/env";
@@ -792,9 +792,11 @@ export async function refundBooking(
   }
 
   // (3) Settle.
+  // `settleRefund` emails the customer once the refund has succeeded; a card
+  // refund the provider reports as pending is emailed when the charge.refunded
+  // webhook settles it.
   const settled = await settleRefund(db, { refundId: reserved.id, status, providerRefundId, user });
   if (!settled || settled.refund.status === "failed") throw new BookingError("UNAVAILABLE", failure);
-  await emailCustomer(db, "refund email", { bookingId: current.id, template: "refund", extra: { refundAmountPence: amount } });
   return settled.refund;
 }
 
@@ -839,7 +841,9 @@ export async function settleRefund(
   input: { refundId: string; status: s.Refund["status"]; providerRefundId?: string | null; user?: CurrentUser | null },
 ): Promise<{ refund: s.Refund; booking: s.Booking } | null> {
   if (!isUuid(input.refundId)) return null;
-  return db.transaction(async (tx) => {
+  // Set inside the transaction when the refund has just gone through.
+  const email: { method: RefundMethod | null } = { method: null };
+  const result = await db.transaction(async (tx) => {
     const [peek] = await tx.select({ bookingId: s.refunds.bookingId }).from(s.refunds).where(eq(s.refunds.id, input.refundId)).limit(1);
     if (!peek) return null;
     // Lock order: the booking row first, as everywhere else.
@@ -876,6 +880,10 @@ export async function settleRefund(
       booking = await updateBooking(tx, before.id, { refundedPence, paymentStatus: derivePaymentStatus({ ...before, refundedPence }) });
     }
     await syncPaymentRefundStatus(tx, row.paymentId);
+    if (row.status !== "succeeded" && status === "succeeded") {
+      const [payment] = await tx.select({ method: s.payments.method }).from(s.payments).where(eq(s.payments.id, row.paymentId)).limit(1);
+      email.method = payment ? refundMethodFor(payment) : "card";
+    }
     if (row.status !== status) {
       await audit(tx, {
         user: input.user ?? null,
@@ -889,6 +897,15 @@ export async function settleRefund(
     }
     return { refund, booking };
   });
+  // The customer hears about a refund once it has gone through, and only once.
+  if (result && email.method) {
+    await emailCustomer(db, "refund email", {
+      bookingId: result.booking.id,
+      template: "refund",
+      extra: { refundAmountPence: result.refund.amountPence, refundMethod: email.method },
+    });
+  }
+  return result;
 }
 
 /**
@@ -901,10 +918,12 @@ export async function recordProviderRefund(
   input: { paymentId: string; amountPence: number; providerRefundId: string; status: s.Refund["status"]; reason?: string },
 ): Promise<{ refund: s.Refund; booking: s.Booking } | null> {
   let result: { refund: s.Refund; booking: s.Booking } | null;
+  const email: { method: RefundMethod } = { method: "card" };
   try {
     result = await db.transaction(async (tx) => {
       const [payment] = await tx.select().from(s.payments).where(eq(s.payments.id, input.paymentId)).limit(1);
       if (!payment) return null;
+      email.method = refundMethodFor(payment);
       const before = await loadBookingRow(tx, payment.bookingId, true);
       const [row] = await tx
         .insert(s.refunds)
@@ -940,8 +959,13 @@ export async function recordProviderRefund(
     if (isUniqueViolation(e)) return null;
     throw e;
   }
-  if (result && result.refund.status !== "failed") {
-    await emailCustomer(db, "refund email", { bookingId: result.booking.id, template: "refund", extra: { refundAmountPence: input.amountPence } });
+  // A pending provider refund is emailed when a later webhook settles it (settleRefund).
+  if (result && result.refund.status === "succeeded") {
+    await emailCustomer(db, "refund email", {
+      bookingId: result.booking.id,
+      template: "refund",
+      extra: { refundAmountPence: input.amountPence, refundMethod: email.method },
+    });
   }
   return result;
 }

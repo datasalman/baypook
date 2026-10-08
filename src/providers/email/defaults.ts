@@ -12,7 +12,7 @@ export type DefaultTemplate = { key: TemplateKey; name: string; subject: string;
 export const PLACEHOLDERS: { key: string; meaning: string }[] = [
   { key: "firstName", meaning: "Parent's first name" },
   { key: "reference", meaning: "Booking reference, e.g. BP-7K3M2" },
-  { key: "serviceName", meaning: "What was booked, e.g. Classic Workshops" },
+  { key: "serviceName", meaning: "What was booked, e.g. Workshop" },
   { key: "venueName", meaning: "Venue name" },
   { key: "dayLong", meaning: "Full date, e.g. Saturday 18 October 2026" },
   { key: "startTime", meaning: "Start time, e.g. 14:00" },
@@ -21,11 +21,13 @@ export const PLACEHOLDERS: { key: string; meaning: string }[] = [
   { key: "parkingLine", meaning: "Parking and transport notes" },
   { key: "whatBooked", meaning: "Line items: options, add-ons and prices" },
   { key: "total", meaning: "Total paid, e.g. £34.00" },
-  { key: "inStoreNote", meaning: "In-store note when relevant (Decoden pieces)" },
+  { key: "inStoreNote", meaning: "In-store note, when relevant" },
   { key: "birthdayChild", meaning: "Birthday child's first name (parties)" },
   { key: "contactLine", meaning: "How to reach the business (email, phone, WhatsApp)" },
   { key: "organisationName", meaning: "Business name" },
   { key: "refundAmount", meaning: "Amount refunded, e.g. £17.00" },
+  { key: "refundToCard", meaning: "Set when the refund goes back to the card paid with online (use with #if)" },
+  { key: "refundInStore", meaning: "Set when the refund was given back in store, cash or card machine (use with #if)" },
   { key: "paymentLine", meaning: "Paid online, Paid in store, To pay in store or Imported" },
   { key: "customerName", meaning: "Parent's full name (owner alerts)" },
   { key: "customerPhone", meaning: "Parent's phone (owner alerts)" },
@@ -54,7 +56,7 @@ Reference {{reference}}
 
 ## Before you come
 {{#if parkingLine}}{{parkingLine}}{{/if}}
-What to wear: something you don't mind getting glittery. Aprons are provided, but slime finds a way.
+What to wear: something you don't mind getting glittery.
 Please arrive five minutes early so everyone can start together.
 
 ## Need to change it?
@@ -75,6 +77,7 @@ A quick reminder that you're booked tomorrow.
 {{dayLong}}, {{startTime}} to {{endTime}}
 {{venueName}}, {{address}}
 Reference {{reference}}
+{{paymentLine}}: {{total}}
 
 {{#if parkingLine}}{{parkingLine}}{{/if}}
 What to wear: something you don't mind getting glittery.
@@ -105,7 +108,7 @@ If this is a surprise, or you'd like to rebook, message or call us: {{contactLin
     subject: "Refund of {{refundAmount}} for booking {{reference}}",
     body: `Hello {{firstName}},
 
-We've refunded {{refundAmount}} to the card you paid with. It usually shows within five to ten working days, depending on your bank.
+{{#if refundToCard}}We've refunded {{refundAmount}} to the card you paid with. It usually shows within five to ten working days, depending on your bank.{{/if}}{{#if refundInStore}}We've given you {{refundAmount}} back in store.{{/if}}
 
 Booking {{reference}}, {{serviceName}} at {{venueName}}, {{dayLong}}.
 

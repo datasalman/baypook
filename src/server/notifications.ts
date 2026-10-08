@@ -25,7 +25,23 @@ export type BookingEmailContext = {
   options?: s.ServiceOption[];
 };
 
-export type EmailExtra = { refundAmountPence?: number; adminUrl?: string };
+/**
+ * `refundMethod`: where the refund's money went. "card" for an online card
+ * payment (back to the card), "in_store" for cash or the card machine (handed
+ * back over the counter). Defaults to "card" when not given.
+ */
+export type RefundMethod = "card" | "in_store";
+
+export type EmailExtra = { refundAmountPence?: number; refundMethod?: RefundMethod; adminUrl?: string };
+
+/**
+ * Where the money of a refund against this payment goes back to: cash and card
+ * machine payments are refunded over the counter; online card payments (and
+ * imported ones, which were taken online by the old system) go back to the card.
+ */
+export function refundMethodFor(payment: Pick<s.Payment, "method">): RefundMethod {
+  return payment.method === "cash" || payment.method === "card_machine" ? "in_store" : "card";
+}
 
 export type RenderedBookingEmail = {
   to: string;
@@ -148,6 +164,7 @@ export function buildTemplateContext(ctx: BookingEmailContext, extra: EmailExtra
   const { booking, customer, service, venue, organisation: org } = ctx;
   const tz = org.timezone || "Europe/London";
   const refundPence = extra.refundAmountPence ?? (booking.refundedPence > 0 ? booking.refundedPence : 0);
+  const refundMethod: RefundMethod = extra.refundMethod ?? "card";
   const birthday = booking.birthdayChildFirstName
     ? `${booking.birthdayChildFirstName}${booking.birthdayChildAge ? `, age ${booking.birthdayChildAge}` : ""}`
     : "";
@@ -171,6 +188,8 @@ export function buildTemplateContext(ctx: BookingEmailContext, extra: EmailExtra
     contactLine: contactLineFor(org),
     organisationName: org.name,
     refundAmount: refundPence > 0 ? fmtPence(refundPence) : "",
+    refundToCard: refundMethod === "card" ? "yes" : "",
+    refundInStore: refundMethod === "in_store" ? "yes" : "",
     paymentLine: paymentLineFor(booking),
     customerName: `${customer.firstName} ${customer.lastName}`.trim(),
     customerPhone: customer.phone ?? "",
@@ -402,7 +421,16 @@ export async function sendRawEmail(
  */
 export async function listOutbox(
   db: DbOrTx,
-  opts: { venueIds?: string[] | null; limit?: number; search?: string; bookingId?: string } = {},
+  opts: {
+    venueIds?: string[] | null;
+    limit?: number;
+    search?: string;
+    bookingId?: string;
+    /** Only this template key (e.g. "confirmation"). */
+    template?: string;
+    /** Only this delivery status. */
+    status?: s.Notification["status"];
+  } = {},
 ): Promise<s.Notification[]> {
   const where: (SQL | undefined)[] = [];
   if (Array.isArray(opts.venueIds)) {
@@ -410,6 +438,8 @@ export async function listOutbox(
     where.push(inArray(s.notifications.venueId, opts.venueIds));
   }
   if (opts.bookingId) where.push(eq(s.notifications.bookingId, opts.bookingId));
+  if (opts.template) where.push(eq(s.notifications.template, opts.template));
+  if (opts.status) where.push(eq(s.notifications.status, opts.status));
   const q = opts.search?.trim();
   if (q) {
     const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;

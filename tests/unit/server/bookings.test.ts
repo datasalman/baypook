@@ -1,6 +1,6 @@
 process.env.BAYPOOK_MODE = "demo";
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, type Db } from "@/db";
 import * as s from "@/db/schema";
@@ -28,6 +28,7 @@ import {
 } from "@/server/bookings";
 import { findOrCreateCustomer, getCustomerWithBookings, searchCustomers } from "@/server/customers";
 import { handleStripeEvent, type WebhookEvent } from "@/server/webhooks";
+import { DemoPaymentProvider } from "@/providers/payment/demo";
 import { expireHoldsJob, listJobRuns, runJob } from "@/server/jobs";
 
 const NOW = new Date("2026-10-10T09:00:00Z");
@@ -145,8 +146,19 @@ async function templates(bookingId: string): Promise<string[]> {
   return rows.map((r) => r.template);
 }
 
+async function refundEmails(bookingId: string): Promise<s.Notification[]> {
+  return c.db
+    .select()
+    .from(s.notifications)
+    .where(and(eq(s.notifications.bookingId, bookingId), eq(s.notifications.template, "refund")));
+}
+
 beforeEach(async () => {
   c = await setup();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("cancel and refund", () => {
@@ -167,6 +179,35 @@ describe("cancel and refund", () => {
     // The places are free again.
     const avail = await getSessionAvailability(c.db, { venue: c.venue, service: c.workshops, from: DAY, to: DAY, now: NOW });
     expect(avail.find((a) => a.sessionId === sessionId("14:00"))!.remaining).toBe(10);
+  });
+
+  it("tells an online payer the refund goes back to their card", async () => {
+    const b = await paidBooking("14:00", 2);
+    await refundBooking(c.db, { bookingId: b.id, user: c.owner, amountPence: 1700, reason: "One child could not come" });
+    const emails = await refundEmails(b.id);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].bodyText).toContain("We've refunded £17.00 to the card you paid with.");
+    expect(emails[0].bodyText).not.toContain("back in store");
+  });
+
+  it("tells a cash payer the refund was given back in store", async () => {
+    const b = await createManualBooking(c.db, {
+      user: c.owner,
+      venue: c.venue,
+      service: c.workshops,
+      sessionId: sessionId("15:00"),
+      lines: [{ optionId: slime(), qty: 2 }],
+      addOns: [],
+      customer: { firstName: "Cara", lastName: "Lee", email: "cara@example.com", phone: null },
+      payment: { method: "cash" },
+      sendEmail: false,
+      now: NOW,
+    });
+    await refundBooking(c.db, { bookingId: b.id, user: c.owner, amountPence: 1700, reason: "One child could not come" });
+    const emails = await refundEmails(b.id);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].bodyText).toContain("We've given you £17.00 back in store.");
+    expect(emails[0].bodyText).not.toContain("card you paid with");
   });
 
   it("gives a partial refund and refuses more than was paid", async () => {
@@ -330,6 +371,33 @@ describe("Stripe webhooks", () => {
     expect(b2.paidPence).toBe(3400);
   });
 
+  it("emails a pending card refund only once the webhook says it went through", async () => {
+    const bookingId = await pendingBooking("14:00", 2);
+    await handleStripeEvent(c.db, { venue: c.venue, event: completed("evt_p1", bookingId) });
+    vi.spyOn(DemoPaymentProvider.prototype, "refund").mockResolvedValueOnce({ providerRefundId: "re_pending", status: "pending" });
+    const refund = await refundBooking(c.db, { bookingId, user: c.owner, amountPence: 1700, reason: "One child could not come" });
+    expect(refund.status).toBe("pending");
+    expect(await refundEmails(bookingId)).toHaveLength(0);
+
+    // Still pending: nothing yet.
+    const event = (id: string, status: string): WebhookEvent =>
+      ({
+        id,
+        type: "charge.refunded",
+        data: { object: { id: "ch_p", payment_intent: "pi_test_123", refunds: { data: [{ id: "re_pending", amount: 1700, status }] } } },
+      }) as unknown as WebhookEvent;
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p2", "pending") });
+    expect(await refundEmails(bookingId)).toHaveLength(0);
+
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p3", "succeeded") });
+    const emails = await refundEmails(bookingId);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].bodyText).toContain("We've refunded £17.00 to the card you paid with.");
+    // A repeat of the event sends nothing more.
+    await handleStripeEvent(c.db, { venue: c.venue, event: event("evt_p4", "succeeded") });
+    expect(await refundEmails(bookingId)).toHaveLength(1);
+  });
+
   it("syncs a refund made in Stripe and flags a dispute", async () => {
     const bookingId = await pendingBooking("14:00", 2);
     await handleStripeEvent(c.db, { venue: c.venue, event: completed("evt_a", bookingId) });
@@ -357,6 +425,9 @@ describe("Stripe webhooks", () => {
     });
     const refunds = await c.db.select().from(s.refunds).where(eq(s.refunds.bookingId, bookingId));
     expect(refunds).toHaveLength(1);
+    const emails = await refundEmails(bookingId);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].bodyText).toContain("to the card you paid with");
 
     const disputed = await handleStripeEvent(c.db, {
       venue: c.venue,
