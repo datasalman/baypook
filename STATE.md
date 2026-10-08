@@ -4,11 +4,7 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1, wi
 
 ## Current task
 
-Hardening pass after the MVP (all four stages done, reviewed and verified at commit 707aa31 and again after the UI-review fixes: 351 tests, Playwright 2/2). In flight: agent L (database-backed rate limit for holds/checkout/quote, active-hold cap per client, idle session timeout, retention of auth rows; schema migration `0002_rate_limits` already committed), agent R2 (second-round correctness review of the review fixes, read-only), agent P (more Playwright specs: party with Food time, conflict rule, manual booking + audit, staff scoping, price change, hold release; README screenshots under `docs/screenshots/`). After them: fix any R2 findings, `npm run check`, Playwright, `next build` in an isolated copy, final commit, fill the hash below.
-
-If resuming mid-way: `git status` shows which of those files are uncommitted; `npm run check` tells you whether they are consistent.
-
-Baseline statement: complete. All four stages done, reviewed and verified. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
+Complete. All four stages done; two review rounds (security, correctness twice, UI) fixed; hardening pass done (shared rate limit, hold cap, idle session timeout). Final verification: `npm run check` green (30 files, 378 tests), Playwright 13/13, `next build` passes. See the Report below for what works, what is stubbed, test results and next steps. If you are resuming to continue work: read the Report's "What is missing" and "Three things to do next", run `npm run check`, then pick from there.
 
 ## Half-finished
 
@@ -17,7 +13,7 @@ Nothing.
 ## Next three steps (for a future session)
 
 1. Rehearse against Stripe test mode (real test keys, `BAYPOOK_MODE=live`, a Neon database) following `SETUP.md` steps 1, 4 and 5; confirm the webhook confirms a booking and a refund syncs back.
-2. Add a Vercel WAF rate-limit rule for `/api/v1/holds` and `/api/v1/checkout` (hold hoarding is the one open security item).
+2. Add a Vercel WAF rate-limit rule for `/api/v1/holds` and `/api/v1/checkout` as an extra layer over the built-in limits.
 3. Replace the placeholder legal name, address, company number, opening hours, terms and waiver in Settings; then switch the website's `bookingApi` per venue (`INTEGRATION.md`).
 
 ## Notes for a resumed session
@@ -63,11 +59,12 @@ Nothing.
 - [done] Reminders cron (24 h, once, idempotent), retention cron (anonymise after 24 months)
 - [done] `scripts/import-wix.ts` (CSV, dry run, duplicate detection by external ref)
 - [done] `src/client/client.ts` + `types.ts`, `INTEGRATION.md`
-- [done] Playwright smoke (book + pay; owner refund)
+- [done] Playwright: smoke (book + pay; owner refund), party with Food time + owner alert, conflict rule both ways, manual booking + audit, staff scoping, price change, hold release and expiry cron (13 specs)
 
 ### Stage 4: hand-over
 - [done] README (demo walkthrough), SETUP, INTEGRATION, DECISIONS (32 entries), `.env.example`, `vercel.json`
-- [done] Security review (no critical/high; mediums fixed; one documented gap) and correctness review (16 findings fixed with 24 regression tests)
+- [done] Security review (no critical/high; mediums fixed; hold hoarding then closed in code with a shared rate limit and a per-client hold cap), correctness review round 1 (16 findings, 24 regression tests) and round 2 (10 findings, 16 tests), UI copy/accessibility review (fixed)
+- [done] README screenshots (`docs/screenshots/`, regenerate with `SCREENSHOTS=1 npx playwright test tests/e2e/screenshots.spec.ts`)
 - [done] Production build (`next build`) and `next start` in demo mode verified
 - [done] Final report below
 
@@ -92,11 +89,11 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 ### 2. What is missing or stubbed, and why
 
 - **Stripe, Resend and Google have real adapters but were not exercised against real accounts** (no keys in this session). The Stripe adapter follows the Checkout Sessions, Webhooks and Refunds APIs; the first rehearsal must be Stripe test mode (SETUP step 1.6).
-- **Hold hoarding** (security review): `POST /api/v1/holds` is unauthenticated and the in-process rate limit is per serverless instance. Mitigation is a Vercel WAF rule (SETUP step 5.6); a shared limiter (Upstash or Postgres counters) is the code fix.
+- **Hold hoarding** is now limited in code (3 live holds per client, shared database rate limits of 10 holds / 10 checkouts / 60 quotes a minute, DECISIONS 27); people behind one shared IP share the cap, and a Vercel WAF rule remains a sensible extra layer (SETUP step 5).
 - **P2 items left as interfaces only:** SMS/WhatsApp (the `notifications.channel` column and `EmailProvider` shape), Stripe Terminal (`PaymentProvider`), waiting list, ICS feed, register view, Stripe Connect.
 - **Google Calendar is one-way**; events are never read back.
-- **Idle session timeout** is not enforced (30-day sessions; `lastSeenAt` is recorded). Account enumeration by response timing on the login form is possible in theory.
-- **Form validation errors redirect with a flash** and lose typed values on some admin forms (HTML validation catches most first).
+- **Sessions** last 30 days with a 14-day idle timeout. The login form answers unknown and known emails in a comparable time (minimum 400 ms); `after()` from `next/server` would be the production answer for the email send.
+- **Admin forms keep typed values on error** (ActionForm); a handful of secondary forms still redirect with a flash on server-side errors.
 - **Known lock-order difference** between webhook confirmation (booking → hold) and checkout/expiry (hold → booking); Postgres aborts one side and Stripe retries.
 - **Reminders use `reminderSentAt` as the idempotency guard** rather than the notification table, so a reminder resent manually from the Outbox is not deduplicated.
 
@@ -111,18 +108,18 @@ Hold-expiry verification on a fresh database after the review fixes (8 Oct, hold
 
 ### 4. Test results
 
-- `npm run check`: typecheck clean, lint clean, Vitest 27 files / 337 tests passing (about 90 s; the PGlite tests dominate).
+- `npm run check`: typecheck clean, lint clean, Vitest 30 files / 378 tests passing (about 100 s; the PGlite tests dominate).
 - `npm run test:coverage`: `src/core` 99.4% statements, 96.8% branches, 100% functions, 100% lines (thresholds 90/80/90/90).
-- `npm run test:e2e`: Playwright 2/2 (book two children and pay; owner finds the booking and refunds). Needs port 3100 free and `.data/e2e` wiped; about 55 s.
+- `npm run test:e2e`: Playwright 13/13 across 6 spec files (one worker; about 2.5 min). Needs port 3100 free and `.data/e2e` wiped.
 - `next build`: passes; `next start` in demo mode serves `/api/v1`, `/book`, `/login`.
 - Flaky only when several `next dev` servers run from one checkout (shared `.next`); run one at a time.
 
 ### 5. Git
 
-Every task was committed and pushed to `https://github.com/datasalman/baypook` on `main`. Pushes succeeded after switching the author to the GitHub noreply email (the first attempt was refused by GitHub's email-privacy setting). Latest commit hash: HASH_PLACEHOLDER.
+Every task was committed and pushed to `https://github.com/datasalman/baypook` on `main`. Pushes succeeded after switching the author to the GitHub noreply email (the first attempt was refused by GitHub's email-privacy setting). Latest code commit before this report: `6b0d7a3`; the commit that adds this report is the final one on `main`.
 
 ### 6. Three things to do next
 
 1. Stripe test-mode rehearsal end to end (checkout, webhook confirmation, refund sync, dispute) on a staging Vercel project with a Neon database.
-2. Shared rate limiting for holds and checkout (Vercel WAF now; Upstash/Postgres counters in code), and a captcha or email confirmation for pay-in-store checkouts if that toggle is ever turned on.
-3. Owner polish from a real rehearsal: keep typed values on admin form errors, an idle session timeout, and the P2 register view for tick-in on the day.
+2. A captcha or email confirmation for pay-in-store checkouts if that toggle is ever turned on (today a pay-in-store booking confirms without payment, limited only by the hold cap and rate limits).
+3. Owner polish from a real rehearsal, then the P2 register view for tick-in on the day and the ICS feed per venue.
