@@ -13,3 +13,13 @@ Each entry: what was open, what BayPook does, why. Values that could change are 
 9. **Google Calendar via REST + `google-auth-library`** rather than the full `googleapis` package (smaller, same API).
 10. **Migrations run at runtime only in demo** (PGlite). In live mode `npm run db:migrate` (drizzle-kit) is part of the deploy command, so a cold serverless function never migrates.
 11. **Payment status on bookings** is a denormalised summary (`unpaid | owed | paid | refunded | partially_refunded`) kept in step with the `payments` and `refunds` ledger, so lists and reports do not need joins.
+12. **New services start with online booking off** so a service with no options or times cannot be booked by accident; the flash message says to switch it on.
+13. **A new venue starts "closed"** with one "Main room" and unconfirmed 10:00–18:00 hours every day.
+14. **Placeholder flags** clear when the field is saved with a new value or its "This is correct" box is ticked; terms and waiver flags clear when the wording changes; the organisation's "openingHours" flag clears once every venue's hours are confirmed.
+15. **Terms and waiver are versioned separately**, each with "Save as new version" and "Save wording only". Bookings record the versions they accepted.
+16. **Admin entry units:** notice in hours, cut-off in minutes, prices in pounds (stored in pence).
+17. **A single session's capacity cannot go below the places already booked.** Adding a block warns how many bookings overlap; a "cancel" exception reports the sessions it kept because they have bookings. Neither cancels bookings: staff move or cancel them one by one, audited.
+18. **Rooms cannot be deleted** while services, sessions, bookings, holds or blocks reference them, or when they are the venue's last room.
+19. **Reports:** a payment counts on the day it was taken; a refund is subtracted on the day it was given; imported Wix payments are left out of takings; CSV cells starting with `= + - @` are prefixed with an apostrophe to stop spreadsheet formula injection.
+20. **Users:** nobody can change their own role or deactivate themselves; the last active owner cannot be demoted or deactivated; deactivating deletes the user's sessions. Users are never deleted.
+21. **Walk-ins without an email** are stored with a placeholder address `no-email@<venue-slug>.local` and no email is sent.

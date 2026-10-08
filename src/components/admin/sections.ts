@@ -24,6 +24,8 @@ export const ADMIN_SECTION_GROUPS: { title: string; items: AdminSection[] }[] = 
     title: "Set-up",
     items: [
       { href: "/admin/catalogue", label: "Catalogue", description: "Services, prices, options, add-ons, timetable and blocked time" },
+      { href: "/admin/catalogue/sessions", label: "Sessions", description: "Change one session's places, cancel it, or add an extra one" },
+      { href: "/admin/catalogue/blocks", label: "Blocked time", description: "Close a day, private hire, a room out of use" },
       { href: "/admin/settings", label: "Settings", description: "Organisation, venues, policies, terms, email wording", ownerOnly: true },
       { href: "/admin/users", label: "Users and invites", description: "Who can sign in and what they can do", ownerOnly: true },
       { href: "/admin/connections", label: "Connections", description: "Stripe, email, calendar: connected or not", ownerOnly: true },
