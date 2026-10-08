@@ -4,11 +4,11 @@ Session started 2026-10-08 03:11 (Europe/London). Director: Claude Fable 5.1. Sp
 
 ## Current task
 
-Stage 1 wave 1 (parallel subagents): A core rules + holds (`src/core`, `src/server/availability|holds|pricing|catalogue`), B email render + ics + notifications + calendar service, C admin shell + auth + Today/Week.
+Stage 1/2 in flight. Done: A (core + holds, committed), B (email/ics/notifications/calendar, committed). Running: C admin shell + auth, D1 API + checkout + webhooks + bookings service, D2 `/book` page + client. Queued (briefs in `docs/agents/`): F1 catalogue/settings, F2 ops pages (after C), E booking actions admin (after C + D1), G jobs/import/integration/Playwright (after D1 + D2).
 
 ## Half-finished
 
-Wave 1 agents running. Contracts: `docs/API.md` (public API), prompts recorded in `docs/agents/` (ownership of files per agent).
+Agent C's files (`src/server/auth.ts`, `src/components/ui`, `src/app/(admin)`, `src/app/layout.tsx`, `globals.css`) and D2's (`src/app/book`, `src/client`) are on disk but not yet committed; D1 is writing `src/server/bookings|checkout|webhooks|jobs|customers.ts`, `src/lib/api.ts`, `src/app/api/**`, `src/app/demo/**`.
 
 ## Next three steps
 
@@ -34,11 +34,11 @@ Wave 1 agents running. Contracts: `docs/API.md` (public API), prompts recorded i
 - [done] First push
 
 ### Stage 1: booking end to end (target: hour 3)
-- [todo] `src/core`: time, overlap, timetable materialisation, availability (sessions + slot starts), pricing, holds, state machine, tests (≥90% coverage)
+- [done] `src/core`: time, overlap, timetable materialisation, availability (sessions + slot starts), pricing, holds, state machine, tests (100% line coverage)
 - [todo] Public API: venues, services, availability, holds, checkout, booking summary; error codes; CORS; rate limit
 - [todo] Stripe webhook per venue; processed events; charge.refunded, dispute, session.expired
 - [todo] Demo fake checkout page (Pay / Decline)
-- [todo] Confirmation email with `.ics`
+- [done] Confirmation email with `.ics` (service + templates; wired to checkout by D1)
 - [todo] Reference booking page `/book`
 - [todo] Hold expiry cron + admin "Run now"
 
